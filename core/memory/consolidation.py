@@ -1,0 +1,419 @@
+"""Brain Agent v2 — Memory Consolidation Engine.
+
+Runs periodically in the background to keep the memory store healthy:
+
+* **Near-duplicate merging** — collapses semantically identical memories
+  (cosine similarity > 0.95) into a single canonical record.
+* **Contradiction resolution** — detects same-category memories that conflict
+  with each other (e.g. two "User prefers X" facts for the same topic) and
+  keeps only the most recent one.
+* **Importance decay** — gradually reduces the importance score of memories
+  that have not been accessed for 30+ days.
+* **Importance promotion** — rewards frequently-accessed memories with a
+  higher importance score.
+
+Consolidation is triggered by :meth:`ConsolidationEngine.maybe_consolidate`
+once every :data:`CONSOLIDATION_INTERVAL` turns.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import math
+import time
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .database import MemoryDatabase
+    from ..llm.provider import OllamaProvider
+
+logger = logging.getLogger(__name__)
+
+CONSOLIDATION_INTERVAL: int = 10   # turns between automatic consolidation runs
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Return the cosine similarity between two equal-length float vectors.
+
+    Args:
+        a: First vector.
+        b: Second vector.
+
+    Returns:
+        Cosine similarity in ``[−1, 1]``; returns 0.0 if either vector is
+        zero-length or the two vectors have different lengths.
+    """
+    if len(a) != len(b) or not a:
+        return 0.0
+
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+
+    return dot / (norm_a * norm_b)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ConsolidationEngine
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ConsolidationEngine:
+    """Periodic background job that keeps the memory store clean and compact.
+
+    Args:
+        db:      Initialised :class:`~.database.MemoryDatabase`.
+        llm:     LLM provider used for semantic contradiction detection
+                 (currently unused — contradiction resolution uses heuristics).
+        embedder: Embedding model used to retrieve stored vectors for duplicate
+                  detection.
+    """
+
+    def __init__(self, db, llm, embedder) -> None:
+        self.db = db
+        self.llm = llm
+        self.embedder = embedder
+
+    # ── Scheduling ────────────────────────────────────────────────────────────
+
+    async def maybe_consolidate(self, turn_count: int) -> None:
+        """Run consolidation if the current turn is a multiple of the interval.
+
+        Designed to be awaited at the end of every agent turn:
+
+        .. code-block:: python
+
+            await engine.maybe_consolidate(turn_count)
+
+        Args:
+            turn_count: The 1-based index of the current conversation turn.
+        """
+        if turn_count > 0 and turn_count % CONSOLIDATION_INTERVAL == 0:
+            logger.info(
+                "maybe_consolidate: turn %d — triggering consolidation.", turn_count
+            )
+            await self.consolidate()
+        else:
+            logger.debug(
+                "maybe_consolidate: turn %d — skipping (next at turn %d).",
+                turn_count,
+                CONSOLIDATION_INTERVAL * (turn_count // CONSOLIDATION_INTERVAL + 1),
+            )
+
+    # ── Full consolidation pass ───────────────────────────────────────────────
+
+    async def consolidate(self) -> None:
+        """Run all consolidation steps sequentially.
+
+        Steps:
+
+        1. :meth:`merge_near_duplicates` — vector-similarity deduplication
+        2. :meth:`resolve_contradictions` — heuristic contradiction resolution
+        3. :meth:`apply_decay` — importance decay for old memories
+        4. :meth:`promote_important` — importance boost for popular memories
+        """
+        logger.info("consolidate: starting consolidation pass.")
+        start = time.time()
+
+        try:
+            merges = await self.merge_near_duplicates()
+            logger.info("consolidate: merged %d near-duplicate pairs.", merges)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("consolidate: merge_near_duplicates failed — %s", exc)
+            merges = 0
+
+        try:
+            resolutions = await self.resolve_contradictions()
+            logger.info(
+                "consolidate: resolved %d contradictions.", resolutions
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("consolidate: resolve_contradictions failed — %s", exc)
+            resolutions = 0
+
+        try:
+            decayed = self.apply_decay()
+            logger.info("consolidate: decayed %d stale memories.", decayed)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("consolidate: apply_decay failed — %s", exc)
+            decayed = 0
+
+        try:
+            promoted = self.promote_important()
+            logger.info("consolidate: promoted %d frequently-accessed memories.", promoted)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("consolidate: promote_important failed — %s", exc)
+            promoted = 0
+
+        elapsed = time.time() - start
+        logger.info(
+            "consolidate: pass complete in %.2fs — "
+            "merges=%d, resolutions=%d, decayed=%d, promoted=%d.",
+            elapsed, merges, resolutions, decayed, promoted,
+        )
+
+    # ── Step 1 — Near-duplicate merging ──────────────────────────────────────
+
+    async def merge_near_duplicates(self) -> int:
+        """Detect and merge near-duplicate memories using vector cosine similarity.
+
+        Algorithm:
+
+        1. Fetch all stored embeddings from the ``memory_vectors`` virtual table.
+        2. Compare every pair of embeddings (batched to avoid loading all at once).
+        3. For pairs with cosine similarity > 0.95:
+
+           * Keep the memory with the higher ``access_count`` (falling back to
+             the higher ``id`` as a tie-breaker).
+           * Mark the other memory as superseded via
+             :meth:`~.database.MemoryDatabase.mark_superseded`.
+           * Delete the superseded memory's embedding and memory row.
+
+        Returns:
+            Number of duplicate pairs merged.
+
+        Note:
+            Runs in a thread executor to avoid blocking the event loop during
+            the O(N²) similarity computation.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._merge_near_duplicates_sync)
+
+    def _merge_near_duplicates_sync(self) -> int:
+        """Synchronous implementation of near-duplicate merging."""
+        # Fetch all embeddings
+        embeddings = self.db.get_all_embeddings(
+            table="memory_vectors", id_col="memory_id", limit=2000
+        )
+        if len(embeddings) < 2:
+            return 0
+
+        n = len(embeddings)
+        merge_count = 0
+        deleted_ids: set[int] = set()
+
+        # Batch size for pairwise comparison to limit peak memory usage
+        BATCH = 200
+
+        for i in range(0, n, BATCH):
+            batch_i = embeddings[i: i + BATCH]
+            for j in range(i, n, BATCH):
+                batch_j = embeddings[j: j + BATCH]
+                for idx_i, (id_a, emb_a) in enumerate(batch_i):
+                    if id_a in deleted_ids:
+                        continue
+                    start_j = idx_i + 1 if j == i else 0
+                    for idx_j, (id_b, emb_b) in enumerate(batch_j):
+                        if idx_j < start_j and j == i:
+                            continue
+                        if id_b in deleted_ids or id_a == id_b:
+                            continue
+
+                        sim = _cosine_similarity(emb_a, emb_b)
+                        if sim > 0.95:
+                            # Decide which memory to keep
+                            mem_a = self.db.get_memory(id_a)
+                            mem_b = self.db.get_memory(id_b)
+
+                            if mem_a is None or mem_b is None:
+                                continue
+
+                            acc_a = int(mem_a.get("access_count", 0))
+                            acc_b = int(mem_b.get("access_count", 0))
+
+                            if acc_a >= acc_b:
+                                keep_id, drop_id = id_a, id_b
+                            else:
+                                keep_id, drop_id = id_b, id_a
+
+                            # Mark as superseded and delete the duplicate
+                            try:
+                                self.db.mark_superseded(drop_id, keep_id)
+                                self.db.execute(
+                                    "DELETE FROM memories WHERE id = ?",
+                                    (drop_id,),
+                                )
+                                deleted_ids.add(drop_id)
+                                merge_count += 1
+                                logger.debug(
+                                    "merge_near_duplicates: merged %d → %d "
+                                    "(sim=%.4f).",
+                                    drop_id, keep_id, sim,
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "merge_near_duplicates: could not merge "
+                                    "%d → %d — %s.",
+                                    drop_id, keep_id, exc,
+                                )
+
+        return merge_count
+
+    # ── Step 2 — Contradiction resolution ────────────────────────────────────
+
+    async def resolve_contradictions(self) -> int:
+        """Detect and resolve contradictory memories within the same category.
+
+        Heuristic: two memories in the same category that both start with
+        ``"User prefers"`` followed by the same key phrase are contradictory —
+        the newer one is kept and the older is deleted.
+
+        The method groups candidate memories by category and looks for pairs
+        whose content has the same leading key token (the word immediately after
+        ``"User prefers "``).
+
+        Returns:
+            Number of contradictions resolved.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self._resolve_contradictions_sync)
+
+    def _resolve_contradictions_sync(self) -> int:
+        """Synchronous implementation of contradiction resolution."""
+        # Fetch candidate memories (those starting with preference/correction phrases)
+        rows = self.db.execute(
+            """
+            SELECT id, content, category, created_at
+              FROM memories
+             WHERE superseded_by IS NULL
+               AND (
+                     content LIKE 'User prefers%'
+                  OR content LIKE 'User likes%'
+                  OR content LIKE 'User dislikes%'
+                  OR content LIKE 'User wants%'
+               )
+             ORDER BY category, created_at DESC
+            """,
+        )
+
+        if not rows:
+            return 0
+
+        # Group by (category, topic_key)
+        # topic_key = first two words of content after the leading phrase
+        from collections import defaultdict
+        groups: dict[tuple, list[dict]] = defaultdict(list)
+
+        for row in rows:
+            content = str(row.get("content", ""))
+            category = str(row.get("category", ""))
+            words = content.split()
+            # Use first 3 words as the "topic key" (e.g. "User prefers dark")
+            topic_key = " ".join(words[:3]).lower() if len(words) >= 3 else content.lower()
+            groups[(category, topic_key)].append(row)
+
+        resolution_count = 0
+
+        for (category, topic_key), group in groups.items():
+            if len(group) <= 1:
+                continue
+
+            # Sort newest first (already sorted by created_at DESC above, but
+            # re-sort here to be safe since defaultdict merges groups)
+            group_sorted = sorted(
+                group,
+                key=lambda r: float(r.get("created_at", 0)),
+                reverse=True,
+            )
+
+            # Keep the newest, delete the rest
+            keep = group_sorted[0]
+            for duplicate in group_sorted[1:]:
+                try:
+                    self.db.mark_superseded(
+                        int(duplicate["id"]), int(keep["id"])
+                    )
+                    self.db.execute(
+                        "DELETE FROM memories WHERE id = ?",
+                        (int(duplicate["id"]),),
+                    )
+                    resolution_count += 1
+                    logger.debug(
+                        "resolve_contradictions: deleted contradicting memory "
+                        "%d, kept %d (topic=%r).",
+                        duplicate["id"], keep["id"], topic_key,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "resolve_contradictions: could not delete memory %d — %s.",
+                        duplicate["id"], exc,
+                    )
+
+        return resolution_count
+
+    # ── Step 3 — Importance decay ─────────────────────────────────────────────
+
+    def apply_decay(self) -> int:
+        """Reduce importance of memories not accessed in the last 30 days.
+
+        Executes the following SQL update:
+
+        .. code-block:: sql
+
+            UPDATE memories
+               SET importance    = MAX(0.1, importance - 0.05),
+                   updated_at    = CURRENT_TIMESTAMP
+             WHERE last_accessed < datetime('now', '-30 days')
+               AND importance    > 0.1
+
+        Returns:
+            Number of memory rows whose importance was reduced.
+        """
+        try:
+            rows = self.db.execute(
+                """
+                UPDATE memories
+                   SET importance  = MAX(0.1, importance - 0.05),
+                       updated_at  = CURRENT_TIMESTAMP
+                 WHERE last_accessed < datetime('now', '-30 days')
+                   AND importance    > 0.1
+                """,
+            )
+            # SQLite doesn't return rowcount through execute() easily;
+            # query the change count via a separate approach.
+            count_rows = self.db.execute("SELECT changes() AS n")
+            count = int(count_rows[0]["n"]) if count_rows else 0
+            return count
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("apply_decay: SQL failed — %s", exc)
+            return 0
+
+    # ── Step 4 — Importance promotion ────────────────────────────────────────
+
+    def promote_important(self) -> int:
+        """Boost importance of memories that have been accessed 10+ times.
+
+        Executes the following SQL update:
+
+        .. code-block:: sql
+
+            UPDATE memories
+               SET importance = MIN(1.0, importance + 0.1)
+             WHERE access_count >= 10
+               AND importance   < 1.0
+
+        Returns:
+            Number of memory rows whose importance was increased.
+        """
+        try:
+            self.db.execute(
+                """
+                UPDATE memories
+                   SET importance = MIN(1.0, importance + 0.1)
+                 WHERE access_count >= 10
+                   AND importance   < 1.0
+                """,
+            )
+            count_rows = self.db.execute("SELECT changes() AS n")
+            count = int(count_rows[0]["n"]) if count_rows else 0
+            return count
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("promote_important: SQL failed — %s", exc)
+            return 0
