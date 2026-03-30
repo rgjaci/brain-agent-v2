@@ -233,6 +233,48 @@ class Reranker:
 
         return output
 
+    # ── Stage 3 — Cross-encoder reranking ────────────────────────────────────
+
+    def cross_encoder_rerank(
+        self, query: str, candidates: list, top_k: int = 10
+    ) -> list:
+        """Rerank candidates using a cross-encoder model.
+
+        Tries to import ``sentence_transformers`` and use a cross-encoder.
+        Falls back to returning ``candidates[:top_k]`` if not installed.
+
+        Args:
+            query:      The query string.
+            candidates: List of memory dicts (must have ``"content"`` key).
+            top_k:      Number of results to return.
+
+        Returns:
+            Reranked list of memory dicts, limited to *top_k*.
+        """
+        if not candidates:
+            return []
+
+        try:
+            from sentence_transformers import CrossEncoder
+            model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+            pairs = [
+                (query, str(c.get("content", "")))
+                for c in candidates
+            ]
+            scores = model.predict(pairs)
+            scored = list(zip(scores, candidates))
+            scored.sort(key=lambda x: float(x[0]), reverse=True)
+            return [c for _, c in scored[:top_k]]
+        except ImportError:
+            logger.debug(
+                "cross_encoder_rerank: sentence-transformers not installed — "
+                "returning top-k by existing order."
+            )
+            return candidates[:top_k]
+        except Exception as exc:
+            logger.warning("cross_encoder_rerank failed: %s", exc)
+            return candidates[:top_k]
+
     # ── Utilities ─────────────────────────────────────────────────────────────
 
     def compute_age_days(self, created_at) -> float:

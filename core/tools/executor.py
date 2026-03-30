@@ -138,24 +138,73 @@ class ToolExecutor:
         return self.teach_tool.format_result(result)
 
     async def _run_recall(self, params: dict) -> str:
-        """Explicit memory search — returns matching memories."""
+        """Explicit memory search — hybrid FTS5 + vector search with RRF merge."""
         if self.db is None:
             return "[RECALL ERROR] Database not configured"
         query = params.get("query", "").strip()
         if not query:
             return "[RECALL ERROR] Empty query"
         try:
-            results = self.db.fts_search(query, limit=10)
-            if not results:
+            import re
+            safe_query = re.sub(r'[^\w\s]', ' ', query).strip()
+
+            # Sparse (FTS5) search
+            sparse_hits = self.db.fts_search(safe_query, limit=20) if safe_query else []
+
+            # Dense (vector) search — if embedder available
+            dense_hits = []
+            if self.embedder is not None:
+                try:
+                    embedding = self.embedder.embed_query(query)
+                    dense_hits = self.db.vector_search(
+                        embedding=embedding,
+                        table="memory_vectors",
+                        id_col="memory_id",
+                        limit=20,
+                    )
+                except Exception:
+                    pass  # graceful degradation
+
+            # RRF fusion
+            k = 60
+            scores: dict[int, float] = {}
+            for rank, item in enumerate(sparse_hits):
+                mid = item["id"]
+                scores[mid] = scores.get(mid, 0.0) + 1.0 / (k + rank + 1)
+            for rank, item in enumerate(dense_hits):
+                mid = item["id"]
+                scores[mid] = scores.get(mid, 0.0) + 1.0 / (k + rank + 1)
+
+            if not scores:
                 return f'No memories found for: "{query}"'
+
+            # Sort by RRF score descending, take top 10
+            sorted_ids = sorted(scores.keys(), key=lambda m: scores[m], reverse=True)[:10]
+
             lines = [f'Memory search results for "{query}":']
-            for i, mem in enumerate(results, 1):
-                content = mem.get("content", "") if isinstance(mem, dict) else getattr(mem, "content", str(mem))
-                category = mem.get("category", "fact") if isinstance(mem, dict) else getattr(mem, "category", "fact")
+            for i, mid in enumerate(sorted_ids, 1):
+                mem = self.db.get_memory(mid)
+                if not mem:
+                    continue
+                content = mem.get("content", "")
+                category = mem.get("category", "fact")
                 lines.append(f"{i}. [{category}] {content}")
             return "\n".join(lines)
         except Exception as e:
             return f"[RECALL ERROR] {e}"
+
+    def _check_network_permission(self, tool_name: str) -> bool:
+        """Check whether a tool is allowed to make network requests.
+
+        Args:
+            tool_name: Name of the tool requesting network access.
+
+        Returns:
+            True if network access is permitted for this tool.
+        """
+        # Tools that inherently require network access
+        network_tools = {"web_search", "ingest"}
+        return tool_name in network_tools
 
     async def _run_ingest(self, params: dict) -> str:
         path = params.get("path", "").strip()

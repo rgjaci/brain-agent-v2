@@ -716,3 +716,116 @@ class MemoryWriter:
 
         logger.info("Stored procedure '%s' (id=%d).", proc.name, proc_id)
         return proc_id
+
+    # ── Document chunk processing ─────────────────────────────────────────────
+
+    async def process_document_chunk(
+        self,
+        chunk,
+        session_id: str = "ingest",
+    ) -> int:
+        """Store a document chunk as a memory with category='document'.
+
+        Also creates document and document_section rows to maintain the
+        document hierarchy.
+
+        Args:
+            chunk:      A :class:`~.documents.DocumentChunk` instance.
+            session_id: Session identifier for provenance.
+
+        Returns:
+            The new memory row ID.
+        """
+        import json as _json
+        import time as _time
+
+        source_path = chunk.source_path
+        doc_id = chunk.metadata.get("doc_id")
+
+        # Ensure a document row exists
+        if doc_id is None:
+            rows = self.db.execute(
+                "SELECT id FROM documents WHERE source_path = ?",
+                (source_path,),
+            )
+            if rows:
+                doc_id = rows[0]["id"]
+            else:
+                cursor = self.db._conn.execute(
+                    """INSERT INTO documents (title, source_path, doc_type, total_chunks, created_at)
+                       VALUES (?, ?, 'text', ?, ?)""",
+                    (chunk.metadata.get("file_name", source_path),
+                     source_path, chunk.total_chunks, _time.time()),
+                )
+                doc_id = cursor.lastrowid
+
+        # Create a document_section row
+        self.db._conn.execute(
+            """INSERT INTO document_sections (doc_id, title, level, position, created_at)
+               VALUES (?, ?, 0, ?, ?)""",
+            (doc_id, f"chunk-{chunk.chunk_index}", chunk.chunk_index, _time.time()),
+        )
+
+        # Store as memory
+        meta = dict(chunk.metadata)
+        meta["doc_id"] = doc_id
+        meta["chunk_index"] = chunk.chunk_index
+        meta["total_chunks"] = chunk.total_chunks
+
+        fact = FactExtraction(
+            content=chunk.content,
+            category="document",
+            importance=0.4,
+        )
+        memory_id = await self._store_fact(fact, source=f"doc:{source_path}")
+        return memory_id
+
+    # ── Contradiction detection ───────────────────────────────────────────────
+
+    async def detect_contradictions(self, new_memory_id: int) -> list[int]:
+        """Find existing memories that may contradict the newly stored one.
+
+        If similarity > 0.85 and content differs, marks old memories as
+        superseded_by the new one.
+
+        Args:
+            new_memory_id: ID of the freshly stored memory.
+
+        Returns:
+            List of superseded memory IDs.
+        """
+        new_mem = self.db.get_memory(new_memory_id)
+        if not new_mem:
+            return []
+
+        superseded: list[int] = []
+        try:
+            embedding = await asyncio.to_thread(
+                self.embedder.embed, new_mem["content"]
+            )
+            neighbours = self.db.vector_search(
+                embedding=embedding,
+                table="memory_vectors",
+                id_col="memory_id",
+                limit=10,
+            )
+        except Exception:
+            return []
+
+        for neighbour in neighbours:
+            nid = neighbour["id"]
+            if nid == new_memory_id:
+                continue
+            distance = neighbour.get("distance", 1.0)
+            similarity = 1.0 - min(distance, 1.0)
+            if similarity > 0.85:
+                old_mem = self.db.get_memory(nid)
+                if old_mem and old_mem["content"] != new_mem["content"]:
+                    self.db.mark_superseded(nid, new_memory_id)
+                    superseded.append(nid)
+                    logger.debug(
+                        "Contradiction detected: memory %d superseded by %d (sim=%.3f)",
+                        nid, new_memory_id, similarity,
+                    )
+
+        return superseded

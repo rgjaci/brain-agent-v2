@@ -32,6 +32,80 @@ class LLMProvider(ABC):
         return self.generate(messages, system=system)
 
 
+class OpenRouterProvider(LLMProvider):
+    """OpenRouter API provider for accessing cloud LLMs.
+
+    Uses the OpenRouter-compatible OpenAI API format.
+
+    Args:
+        api_key:     OpenRouter API key (defaults to OPENROUTER_API_KEY env var).
+        model:       Model identifier on OpenRouter.
+        temperature: Default sampling temperature.
+        max_tokens:  Default max generation tokens.
+    """
+
+    def __init__(
+        self,
+        api_key: str = "",
+        model: str = "qwen/qwen-2.5-7b-instruct",
+        temperature: float = 0.3,
+        max_tokens: int = 2000,
+        timeout: int = 120,
+    ):
+        import os
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self.model = model
+        self.default_temperature = temperature
+        self.default_max_tokens = max_tokens
+        self.timeout = timeout
+        self.base_url = "https://openrouter.ai/api/v1"
+
+    def generate(
+        self,
+        messages: list[dict],
+        temperature: float = None,
+        max_tokens: int = None,
+        system: str = "",
+    ) -> str:
+        temp = temperature if temperature is not None else self.default_temperature
+        tokens = max_tokens if max_tokens is not None else self.default_max_tokens
+
+        if system:
+            messages = [{"role": "system", "content": system}] + messages
+
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temp,
+            "max_tokens": tokens,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        r = requests.post(
+            f"{self.base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=self.timeout,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data["choices"][0]["message"]["content"]
+
+    def generate_json(self, messages, schema=None, temperature=0.1):
+        response = self.generate(messages, temperature=temperature)
+        text = response.strip()
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+        return json.loads(text)
+
+    def count_tokens(self, text: str) -> int:
+        return len(text) // 4
+
+
 class OllamaProvider(LLMProvider):
     """Ollama local LLM provider.
 
@@ -217,6 +291,25 @@ class OllamaProvider(LLMProvider):
             return len(enc.encode(text))
         except ImportError:
             return len(text) // 4
+
+    @classmethod
+    def from_env(cls) -> "LLMProvider":
+        """Factory that returns an OpenRouterProvider when OPENROUTER_API_KEY is set,
+        otherwise returns an OllamaProvider.
+
+        Returns:
+            An LLMProvider instance configured from environment variables.
+        """
+        import os
+        if os.environ.get("OPENROUTER_API_KEY"):
+            model = os.environ.get("OPENROUTER_MODEL", "qwen/qwen-2.5-7b-instruct")
+            return OpenRouterProvider(
+                api_key=os.environ["OPENROUTER_API_KEY"],
+                model=model,
+            )
+        model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b-nothink")
+        base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        return cls(model=model, base_url=base_url)
 
     def pull_model(self) -> None:
         """Pull the configured model from the Ollama registry.

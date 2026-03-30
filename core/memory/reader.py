@@ -526,6 +526,69 @@ class MemoryReader:
 
         return entities
 
+    # ── Hierarchical document search ────────────────────────────────────────
+
+    def hierarchical_doc_search(
+        self, query: str, max_docs: int = 5
+    ) -> list[dict]:
+        """Search memories sourced from documents, grouped by document.
+
+        Args:
+            query:    Search query.
+            max_docs: Maximum number of distinct documents to return.
+
+        Returns:
+            List of dicts, each with ``"doc_id"``, ``"title"``, ``"chunks"``
+            (list of memory dicts).
+        """
+        import re
+        safe_query = re.sub(r'[^\w\s]', ' ', query).strip()
+        if not safe_query:
+            return []
+
+        try:
+            hits = self.db.fts_search(safe_query, limit=50)
+        except Exception as exc:
+            logger.warning("hierarchical_doc_search FTS failed: %s", exc)
+            return []
+
+        # Filter to document-sourced memories and group by doc_id
+        from collections import defaultdict
+        doc_groups: dict[int, list[dict]] = defaultdict(list)
+
+        for hit in hits:
+            mem = self.db.get_memory(hit["id"])
+            if not mem:
+                continue
+            if mem.get("category") != "document":
+                continue
+            meta = mem.get("metadata", {})
+            if isinstance(meta, str):
+                import json
+                try:
+                    meta = json.loads(meta)
+                except Exception:
+                    meta = {}
+            doc_id = meta.get("doc_id")
+            if doc_id is not None:
+                doc_groups[doc_id].append(mem)
+
+        # Build result grouped by document
+        results: list[dict] = []
+        for doc_id, chunks in list(doc_groups.items())[:max_docs]:
+            # Look up document title
+            doc_rows = self.db.execute(
+                "SELECT title FROM documents WHERE id = ?", (doc_id,)
+            )
+            title = doc_rows[0]["title"] if doc_rows else f"Document {doc_id}"
+            results.append({
+                "doc_id": doc_id,
+                "title": title,
+                "chunks": chunks,
+            })
+
+        return results
+
     # ── Dense search ──────────────────────────────────────────────────────────
 
     async def dense_search(self, query: str, k: int = 50) -> list[dict]:

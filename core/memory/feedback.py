@@ -416,6 +416,63 @@ class RetrievalFeedbackCollector:
             len(weights.get("weights", {})),
         )
 
+    def persist_retrieval_log(self, session_id: str) -> int:
+        """Flush in-memory buffer for *session_id* to the retrieval_log table.
+
+        Args:
+            session_id: Session whose events to flush.
+
+        Returns:
+            Number of rows written.
+        """
+        events = self._buffer.pop(session_id, [])
+        count = 0
+        for event in events:
+            try:
+                self.db.execute(
+                    """INSERT INTO retrieval_log
+                       (session_id, query_text, memory_id, retrieval_method,
+                        retrieval_rank, retrieval_score, was_in_context, was_useful, created_at)
+                       VALUES (?, ?, ?, 'hybrid', ?, ?, 1, ?, ?)""",
+                    (session_id, event.query, event.memory_id,
+                     event.rank, event.rrf_score,
+                     1 if event.was_referenced else 0,
+                     event.timestamp),
+                )
+                count += 1
+            except Exception as exc:
+                logger.warning("persist_retrieval_log: failed for event — %s", exc)
+        logger.debug("persist_retrieval_log: flushed %d events for session %s.", count, session_id)
+        return count
+
+    def maybe_auto_train(self, threshold: int = 200) -> Optional[dict]:
+        """Trigger LR training when enough retrieval log data exists.
+
+        Checks the retrieval_log table row count. If it exceeds *threshold*,
+        collects the buffered data and trains. Otherwise returns None.
+
+        Args:
+            threshold: Minimum number of log rows before training triggers.
+
+        Returns:
+            Trained weight dict, or None if threshold not met or training failed.
+        """
+        try:
+            rows = self.db.execute("SELECT COUNT(*) AS n FROM retrieval_log")
+            count = int(rows[0]["n"]) if rows else 0
+        except Exception:
+            count = 0
+
+        if count < threshold:
+            logger.debug("maybe_auto_train: %d rows < threshold %d — skipping.", count, threshold)
+            return None
+
+        result = self.train_logistic_regression()
+        if result:
+            self.persist_weights(result)
+            logger.info("maybe_auto_train: trained and persisted weights (n=%d).", result.get("n_samples", 0))
+        return result
+
     def load_weights(self) -> Optional[dict]:
         """Load previously saved weights from the database ``config`` table.
 
