@@ -123,7 +123,7 @@ class OllamaProvider(LLMProvider):
 
     def __init__(
         self,
-        model: str = "qwen3.5:4b-nothink",
+        model: str = "qwen3.5:4b",
         base_url: str = "http://localhost:11434",
         temperature: float = 0.3,
         max_tokens: int = 2000,
@@ -307,7 +307,7 @@ class OllamaProvider(LLMProvider):
                 api_key=os.environ["OPENROUTER_API_KEY"],
                 model=model,
             )
-        model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b-nothink")
+        model = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b")
         base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         return cls(model=model, base_url=base_url)
 

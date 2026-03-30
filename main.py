@@ -232,8 +232,8 @@ def make_parser() -> argparse.ArgumentParser:
         prog="brain_agent",
         description="Memory-augmented AI agent -- 4B model + exceptional memory",
     )
-    p.add_argument("--model", default="qwen3.5:4b-nothink",
-                   help="Ollama model name (default: qwen3.5:4b-nothink)")
+    p.add_argument("--model", default="qwen3.5:4b",
+                   help="Ollama model name (default: qwen3.5:4b)")
     p.add_argument("--db",    default="~/.brain_agent/memory.db",
                    help="Path to SQLite database")
     p.add_argument("--debug", action="store_true",
