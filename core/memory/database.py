@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS memories (
     access_count    INTEGER NOT NULL DEFAULT 0,
     created_at      REAL    NOT NULL,
     last_accessed   REAL,
+    usefulness_score REAL   NOT NULL DEFAULT 0.5,
     superseded_by   INTEGER REFERENCES memories(id),
     metadata        TEXT,
     CONSTRAINT importance_range CHECK (importance BETWEEN 0.0 AND 1.0),
@@ -109,6 +110,8 @@ CREATE TABLE IF NOT EXISTS relations (
     confidence      REAL    NOT NULL DEFAULT 1.0,
     source          TEXT    NOT NULL DEFAULT 'inferred',
     created_at      REAL    NOT NULL,
+    valid_from      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    valid_until     DATETIME,
     CONSTRAINT confidence_range CHECK (confidence BETWEEN 0.0 AND 1.0)
 );
 """
@@ -231,6 +234,9 @@ CREATE INDEX IF NOT EXISTS idx_doc_sections_parent  ON document_sections(parent_
 
 CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(session_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_role    ON conversations(role);
+
+CREATE INDEX IF NOT EXISTS idx_memories_usefulness ON memories(usefulness_score DESC);
+CREATE INDEX IF NOT EXISTS idx_relations_valid     ON relations(valid_until);
 """
 
 
@@ -799,3 +805,78 @@ class MemoryDatabase:
                     pass
             result.append(d)
         return result
+
+    # ── Conversations ────────────────────────────────────────────────────────
+
+    def store_conversation(
+        self, session_id: str, role: str, content: str, metadata: Optional[dict] = None
+    ) -> int:
+        """Store a conversation message.
+
+        Args:
+            session_id: Session identifier.
+            role:       Message role (``"user"``, ``"assistant"``, ``"system"``).
+            content:    Message text.
+            metadata:   Optional extra data stored as JSON.
+
+        Returns:
+            The ``id`` of the newly inserted row.
+        """
+        meta_json = json.dumps(metadata) if metadata else None
+        cursor = self._conn.execute(
+            """
+            INSERT INTO conversations (session_id, role, content, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (session_id, role, content, meta_json, _now()),
+        )
+        return cursor.lastrowid  # type: ignore[return-value]
+
+    def get_recent_messages(
+        self, session_id: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Fetch recent conversation messages for a session.
+
+        Args:
+            session_id: Session identifier.
+            limit:      Maximum number of messages to return.
+
+        Returns:
+            List of message dicts ordered oldest-first.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT * FROM conversations
+             WHERE session_id = ?
+             ORDER BY created_at DESC
+             LIMIT ?
+            """,
+            (session_id, limit),
+        ).fetchall()
+        result = [_row_to_dict(r) for r in reversed(rows)]
+        return result
+
+    # ── Usefulness ───────────────────────────────────────────────────────────
+
+    def update_usefulness(self, memory_id: int, delta: float) -> None:
+        """Adjust the usefulness_score of a memory by *delta*, clamped to [0, 1].
+
+        Args:
+            memory_id: Target memory row ID.
+            delta:     Amount to add (positive) or subtract (negative).
+        """
+        self._conn.execute(
+            """
+            UPDATE memories
+               SET usefulness_score = MAX(0.0, MIN(1.0, usefulness_score + ?))
+             WHERE id = ?
+            """,
+            (delta, memory_id),
+        )
+
+    # ── Count ────────────────────────────────────────────────────────────────
+
+    def count_memories(self) -> int:
+        """Return the total number of rows in the memories table."""
+        row = self._conn.execute("SELECT COUNT(*) AS n FROM memories").fetchone()
+        return int(row["n"]) if row else 0

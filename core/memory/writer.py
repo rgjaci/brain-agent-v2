@@ -323,7 +323,7 @@ class MemoryWriter:
         Returns:
             Tuple of ``(list[Entity], list[Relation])``.
         """
-        from brain_agent.core.memory.kg import Entity, Relation  # local import
+        from core.memory.kg import Entity, Relation  # local import
 
         prompt = GRAPH_EXTRACTION_PROMPT.format(
             user_msg=user_msg, agent_msg=agent_msg

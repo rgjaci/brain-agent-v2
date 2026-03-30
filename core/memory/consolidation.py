@@ -370,9 +370,8 @@ class ConsolidationEngine:
             rows = self.db.execute(
                 """
                 UPDATE memories
-                   SET importance  = MAX(0.1, importance - 0.05),
-                       updated_at  = CURRENT_TIMESTAMP
-                 WHERE last_accessed < datetime('now', '-30 days')
+                   SET importance  = MAX(0.1, importance - 0.05)
+                 WHERE last_accessed < (strftime('%s','now') - 2592000)
                    AND importance    > 0.1
                 """,
             )
