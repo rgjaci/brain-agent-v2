@@ -107,7 +107,7 @@ class GeminiEmbeddingProvider:
         ImportError: When ``google-genai`` is not installed.
     """
 
-    MODEL = "text-embedding-004"
+    MODEL = "models/gemini-embedding-001"
     DIMS = 768
     RATE_LIMIT_RPM = 1_500  # Free tier
     BATCH_SIZE = 100         # Max texts per API request

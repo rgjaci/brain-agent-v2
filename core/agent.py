@@ -217,9 +217,9 @@ class BrainAgent:
         self, messages: list[dict], max_iterations: int = 10
     ) -> tuple[str, int]:
         """Execute LLM + tool calls until done or max_iterations."""
-        from .llm.tool_parser import ToolParser
+        from .llm.tool_parser import ToolCallParser
 
-        parser = ToolParser()
+        parser = ToolCallParser()
         total_tokens = 0
 
         for i in range(max_iterations):

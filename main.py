@@ -33,18 +33,17 @@ def build_agent(args=None):
     from core.context.compressor import HistoryCompressor
     from core.agent import BrainAgent
 
-    cfg = AgentConfig(
-        model=getattr(args, "model", "qwen3.5:4b-nothink"),
-        db_path=getattr(args, "db", "~/.brain_agent/memory.db"),
-        debug=getattr(args, "debug", False),
-    )
+    cfg = AgentConfig.load()
+    if hasattr(args, "model") and getattr(args, "model", None):
+        cfg.model = args.model
 
+    debug = getattr(args, "debug", False) if args else False
     logging.basicConfig(
-        level=logging.DEBUG if cfg.debug else logging.WARNING,
+        level=logging.DEBUG if debug else logging.WARNING,
         format="%(name)s %(levelname)s %(message)s",
     )
 
-    db_path = Path(cfg.db_path).expanduser()
+    db_path = Path(getattr(args, "db", "~/.brain_agent/memory.db") if args else "~/.brain_agent/memory.db").expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     db = MemoryDatabase(str(db_path))
@@ -61,7 +60,7 @@ def build_agent(args=None):
     embedder = None
     try:
         from core.llm.embeddings import GeminiEmbeddingProvider
-        embedder = GeminiEmbeddingProvider()
+        embedder = GeminiEmbeddingProvider(api_key=cfg.gemini_api_key)
     except Exception as exc:
         logging.warning("Embedder unavailable (%s) — running without embeddings.", exc)
 
