@@ -75,14 +75,14 @@ class AgentConfig:
     """
 
     # ── LLM ──────────────────────────────────────────────────────────────────
-    model: str = "qwen3.5:4b-nothink"
+    model: str = "qwen3.5:4b"
     ollama_base_url: str = "http://localhost:11434"
     temperature: float = 0.3
     max_tokens: int = 2000
 
     # ── Embeddings ────────────────────────────────────────────────────────────
     gemini_api_key: str = ""
-    embedding_model: str = "text-embedding-004"
+    embedding_model: str = "models/gemini-embedding-001"
     embedding_dims: int = 768
 
     # ── Memory ────────────────────────────────────────────────────────────────
