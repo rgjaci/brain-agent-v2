@@ -71,6 +71,7 @@ class BrainAgent:
         assembler=None,
         tool_executor=None,
         feedback=None,
+        consolidator=None,
         session_id: Optional[str] = None,
         on_event: Optional[Callable[[str, dict], None]] = None,
     ):
@@ -82,11 +83,14 @@ class BrainAgent:
         self.assembler = assembler
         self.tool_executor = tool_executor
         self.feedback = feedback
+        self.consolidator = consolidator
         self.session_id = session_id or str(uuid.uuid4())
         self.on_event = on_event  # TUI event hook: (event_type, data) -> None
 
         # State for current turn
         self._current_tool_calls: list[dict] = []
+        self._turn_count: int = 0
+        self._last_active: float = 0.0
 
     # ------------------------------------------------------------------ #
     #  Main entry point                                                    #
@@ -111,12 +115,13 @@ class BrainAgent:
             try:
                 context = await self.reader.retrieve(user_input, self.session_id)
                 memories_used = len(context.memories) if context else 0
-                if context and context.procedure:
-                    proc = context.procedure
-                    procedure_name = (
-                        proc.get("name") if isinstance(proc, dict)
-                        else getattr(proc, "name", None)
-                    )
+                if context and context.procedures:
+                    proc = context.procedures[0] if context.procedures else None
+                    if proc:
+                        procedure_name = (
+                            proc.get("name") if isinstance(proc, dict)
+                            else getattr(proc, "name", None)
+                        )
                 self._emit("retrieval_done", {
                     "memories": memories_used,
                     "procedure": procedure_name,
@@ -139,7 +144,7 @@ class BrainAgent:
         messages = []
         if self.assembler:
             messages = self.assembler.assemble(
-                procedure=context.procedure if context else None,
+                procedure=context.procedures[0] if (context and context.procedures) else None,
                 memories=context.memories if context else [],
                 kg_context=context.kg_context if context else "",
                 chat_history=history,
@@ -180,8 +185,21 @@ class BrainAgent:
         if self.feedback:
             try:
                 self.feedback.record_outcome(self.session_id, user_accepted=True)
+            except AttributeError:
+                pass  # record_outcome may not exist
             except Exception as e:
                 logger.warning(f"Feedback logging failed: {e}")
+
+        # 9. Consolidation — run if idle > 300s
+        import time
+        self._turn_count += 1
+        now = time.time()
+        if self.consolidator and (now - self._last_active > 300 or self._last_active == 0):
+            try:
+                await self.consolidator.maybe_consolidate(self._turn_count)
+            except Exception as e:
+                logger.warning(f"Consolidation failed: {e}")
+        self._last_active = now
 
         return TurnResult(
             response=response,
