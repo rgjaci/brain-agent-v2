@@ -313,10 +313,19 @@ class BrainAgent:
                     "timeout": 5,
                 })
                 if result.success and result.output.strip():
-                    if self.writer:
-                        # Store directly as a fact memory
-                        await self.writer.extract_from_scan(name, result.output)
+                    if self.db:
+                        # Store raw scan output directly as a fact — no LLM call needed
+                        # This keeps bootstrap fast; the LLM can reason over it later
+                        content = f"[{name}]\n{result.output.strip()}"
+                        self.db.insert_memory(
+                            content=content,
+                            category="observation",
+                            source=f"scan:{name}",
+                            importance=0.6,
+                            confidence=0.9,
+                        )
                     self._emit("bootstrap_scan", {"name": name, "lines": result.output.count("\n")})
+                    print(f"  ✓ {name}")
             except Exception as e:
                 logger.debug(f"Bootstrap scan failed for {name!r}: {e}")
 
