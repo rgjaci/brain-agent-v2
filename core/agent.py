@@ -101,10 +101,10 @@ class BrainAgent:
         """Process one user message. Returns TurnResult."""
         # Wait for any pending background write to finish (don't cancel —
         # knowledge extraction is important to persist).  Typical write takes
-        # 10-20s (LLM extraction + embedding + DB insert), so we give 30s.
+        # 15-30s (2 concurrent LLM extractions + embedding + DB insert).
         if self._write_task and not self._write_task.done():
             try:
-                await asyncio.wait_for(self._write_task, timeout=30.0)
+                await asyncio.wait_for(self._write_task, timeout=60.0)
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
         self._current_tool_calls = []

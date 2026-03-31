@@ -30,24 +30,21 @@ logger = logging.getLogger(__name__)
 # Prompt templates
 # ──────────────────────────────────────────────────────────────────────────────
 
-FACT_EXTRACTION_PROMPT = """Extract facts about the USER from this conversation exchange.
-Focus on: names, preferences, tools, configurations, projects, personal details, opinions, corrections.
-Assume you are LEARNING about the user — extract anything specific they said about themselves.
+FACT_EXTRACTION_PROMPT = """You are a fact extractor. Your job is to find EVERY specific claim about the user in this exchange.
+
+RULES:
+- If the user says their name, location, job, tools, preferences, or anything specific → extract it
+- When in doubt, EXTRACT IT. Missing a fact is worse than extracting a redundant one.
+- Each fact should be one atomic statement.
 
 User: {user_msg}
 Assistant: {agent_msg}
 
-Return JSON array (or empty array [] if truly nothing):
-[{{"content": "...", "category": "fact|preference|observation|correction", "importance": 0.1-1.0}}]
+Return a JSON array of facts. Format:
+[{{"content": "User [verb] ...", "category": "fact|preference|observation|correction", "importance": 0.1-1.0}}]
 
-Examples:
-- "User's name is Rei"
-- "User uses Arch Linux as daily driver"
-- "User programs in Rust for systems work"
-- "User prefers ed25519 SSH keys"
-- "Production server is at 192.168.1.100"
-
-Do NOT extract: pure greetings with no info, generic filler like "how are you"."""
+Example output for "I'm Sarah and I use Neovim":
+[{{"content": "User's name is Sarah", "category": "fact", "importance": 0.9}}, {{"content": "User uses Neovim", "category": "preference", "importance": 0.7}}]"""
 
 GRAPH_EXTRACTION_PROMPT = """Identify entities and relationships in this exchange.
 Only extract SPECIFIC, named entities — not generic words.
