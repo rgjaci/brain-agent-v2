@@ -6,11 +6,12 @@ Layout:
   ├──────────────┬──────────┴──────────────────────┤
   │ TokenBudget  │        StatsPanel               │
   └──────────────┴─────────────────────────────────┘
-  [  Input bar (full width, dock bottom)           ]
+  [  Multiline input bar (full width, dock bottom) ]
 """
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -18,7 +19,7 @@ try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Horizontal, Vertical
-    from textual.widgets import Footer, Header, Input, Label, RichLog, Static
+    from textual.widgets import Footer, Header, Label, RichLog, Static, TextArea
     _TEXTUAL = True
 except ImportError:
     _TEXTUAL = False
@@ -60,7 +61,20 @@ Screen { background: #1a1b26; }
     color: #565f89;
     height: 1;
 }
-#user-input { dock: bottom; margin: 1 0 0 0; }
+#user-input {
+    dock: bottom;
+    margin: 1 0 0 0;
+    height: 5;
+    border: solid #565f89;
+    background: #1a1b26;
+}
+#user-input:focus { border: solid #7aa2f7; }
+#input-hint {
+    dock: bottom;
+    height: 1;
+    color: #565f89;
+    margin: 0 0 0 1;
+}
 RichLog { height: 1fr; scrollbar-size: 1 1; }
 """
 
@@ -75,6 +89,8 @@ if _TEXTUAL:
             Binding("ctrl+b", "bootstrap",    "Bootstrap",   show=True),
             Binding("ctrl+l", "clear_chat",   "Clear Chat",  show=True),
             Binding("ctrl+d", "toggle_debug", "Toggle Debug",show=True),
+            Binding("ctrl+i", "ingest_file",  "Ingest File", show=True),
+            Binding("ctrl+enter", "send_message", "Send",    show=True),
             Binding("ctrl+q", "quit",          "Quit",        show=True),
         ]
 
@@ -107,8 +123,17 @@ if _TEXTUAL:
                     with Vertical(id="stats-panel"):
                         yield Label("── Knowledge Base", classes="panel-title")
                         yield Static(id="stats-display", expand=True)
-            yield Input(placeholder="Message… (Ctrl+Q quit, Ctrl+B bootstrap)",
-                        id="user-input")
+            yield TextArea(
+                id="user-input",
+                language=None,
+                theme="monokai",
+                show_line_numbers=False,
+            )
+            yield Static(
+                "Ctrl+Enter send  |  Ctrl+I ingest  |  "
+                "Ctrl+B bootstrap  |  Ctrl+Q quit",
+                id="input-hint",
+            )
             yield Footer()
 
         def on_mount(self) -> None:
@@ -116,16 +141,27 @@ if _TEXTUAL:
             self._init_token_display()
             self.query_one("#chat-log", RichLog).write(
                 "[bold #7aa2f7]Brain Agent[/bold #7aa2f7] ready. "
-                "Type a message or press [bold]Ctrl+B[/bold] to bootstrap."
+                "Type a message and press [bold]Ctrl+Enter[/bold] to send, "
+                "or [bold]Ctrl+I[/bold] to ingest a file."
             )
+            # Focus the input
+            self.call_after_refresh(self._focus_input)
+
+        def _focus_input(self) -> None:
+            try:
+                self.query_one("#user-input", TextArea).focus()
+            except Exception:
+                pass
 
         # ── input handling ────────────────────────────────────────────────────
 
-        async def on_input_submitted(self, event: Input.Submitted) -> None:
-            text = event.value.strip()
+        async def action_send_message(self) -> None:
+            """Send the current TextArea content as a message."""
+            textarea = self.query_one("#user-input", TextArea)
+            text = textarea.text.strip()
             if not text:
                 return
-            self.query_one("#user-input", Input).value = ""
+            textarea.text = ""
             asyncio.create_task(self._handle_turn(text))
 
         async def _handle_turn(self, user_input: str) -> None:
@@ -270,6 +306,63 @@ if _TEXTUAL:
             self.query_one("#chat-log", RichLog).clear()
             if self.agent:
                 self.agent.new_session()
+
+        async def action_ingest_file(self) -> None:
+            """Prompt for a file path and ingest it."""
+            chat = self.query_one("#chat-log", RichLog)
+            textarea = self.query_one("#user-input", TextArea)
+
+            # Use current input text as path if it looks like a path
+            path_text = textarea.text.strip()
+            if path_text and (
+                path_text.startswith("/") or path_text.startswith("~") or
+                path_text.startswith(".") or "." in path_text.split("/")[-1]
+            ):
+                textarea.text = ""
+                await self._ingest_path(path_text, chat)
+            else:
+                chat.write(
+                    "[bold #e0af68]Ingest:[/bold #e0af68] "
+                    "Type a file or directory path, then press Ctrl+I again."
+                )
+
+        async def _ingest_path(self, path: str, chat: RichLog) -> None:
+            """Ingest a file or directory."""
+            from pathlib import Path
+
+            expanded = Path(path).expanduser().resolve()
+            chat.write(
+                f"[bold #e0af68]Ingesting:[/bold #e0af68] {expanded}"
+            )
+
+            if self.agent is None:
+                chat.write("[red]No agent connected.[/red]")
+                return
+
+            try:
+                from core.memory.documents import DocumentIngester
+                ingester = DocumentIngester(self.agent.db, self.agent.writer)
+
+                if expanded.is_dir():
+                    result = await ingester.ingest_directory(
+                        str(expanded), session_id="tui-ingest"
+                    )
+                elif expanded.is_file():
+                    result = await ingester.ingest_file(
+                        str(expanded), session_id="tui-ingest"
+                    )
+                else:
+                    chat.write(f"[red]Not found: {expanded}[/red]")
+                    return
+
+                status = result.get("status", "unknown")
+                msg = result.get("message", "")
+                color = "green" if status == "ok" else "yellow"
+                chat.write(f"[bold {color}]{msg}[/bold {color}]")
+                self._refresh_stats()
+
+            except Exception as exc:
+                chat.write(f"[red]Ingest error: {exc}[/red]")
 
         def action_toggle_debug(self) -> None:
             panel = self.query_one("#debug-panel")
