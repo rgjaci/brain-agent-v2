@@ -296,7 +296,8 @@ class MemoryReader:
         Rules (evaluated in order):
 
         * **aggressive** — if the query explicitly mentions memory/search/find
-          semantics (e.g. "remember", "find", "recall").
+          semantics (e.g. "remember", "find", "recall"), OR if the session
+          context shows the topic was already discussed (recent topic continuity).
         * **conservative** — if the query is very short (< 15 characters),
           contains no question mark, and contains no domain keywords.
         * **normal** — everything else.
@@ -306,8 +307,7 @@ class MemoryReader:
 
         Args:
             query:   The user query text.
-            context: Recent session context (not currently used but kept for
-                     future expansions).
+            context: Recent session context (concatenated recent user messages).
 
         Returns:
             One of ``"conservative"``, ``"normal"``, or ``"aggressive"``.
@@ -318,6 +318,20 @@ class MemoryReader:
         for kw in _AGGRESSIVE_KEYWORDS:
             if kw in query_lower:
                 return "aggressive"
+
+        # Aggressive: topic continuity — query shares significant tokens with
+        # recent session context, suggesting the user is following up on
+        # something already discussed (worth pulling deeper into memory).
+        if context:
+            import re as _re
+            query_tokens = set(_re.findall(r"\w{4,}", query_lower))
+            context_lower = context.lower()
+            context_tokens = set(_re.findall(r"\w{4,}", context_lower))
+            if query_tokens:
+                overlap = query_tokens & context_tokens
+                overlap_ratio = len(overlap) / len(query_tokens)
+                if overlap_ratio >= 0.5 and len(overlap) >= 2:
+                    return "aggressive"
 
         # Conservative: very short, no question mark, no domain terms
         if len(query.strip()) < 15:

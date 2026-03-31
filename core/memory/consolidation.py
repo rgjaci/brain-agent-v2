@@ -152,6 +152,13 @@ class ConsolidationEngine:
             logger.warning("consolidate: promote_important failed — %s", exc)
             promoted = 0
 
+        # 5. Conversation pruning
+        try:
+            pruned = self.db.prune_conversations(keep_last=100)
+            logger.info("consolidate: pruned %d old conversation rows.", pruned)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("consolidate: prune_conversations failed — %s", exc)
+
         elapsed = time.time() - start
         logger.info(
             "consolidate: pass complete in %.2fs — "

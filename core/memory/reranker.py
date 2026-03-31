@@ -42,6 +42,8 @@ class Reranker:
                             When ``None`` only heuristic scoring is performed.
     """
 
+    _cross_encoder_model = None  # lazy-init class-level cache
+
     def __init__(self, feedback_collector: Optional[object] = None) -> None:
         self.feedback_collector = feedback_collector
 
@@ -256,7 +258,11 @@ class Reranker:
 
         try:
             from sentence_transformers import CrossEncoder
-            model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+            if Reranker._cross_encoder_model is None:
+                Reranker._cross_encoder_model = CrossEncoder(
+                    "cross-encoder/ms-marco-MiniLM-L-6-v2"
+                )
+            model = Reranker._cross_encoder_model
             pairs = [
                 (query, str(c.get("content", "")))
                 for c in candidates

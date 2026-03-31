@@ -889,6 +889,53 @@ class MemoryDatabase:
         result = [_row_to_dict(r) for r in reversed(rows)]
         return result
 
+    # ── Conversation cleanup ─────────────────────────────────────────────────
+
+    def prune_conversations(self, session_id: Optional[str] = None,
+                            keep_last: int = 100) -> int:
+        """Delete old conversation rows, keeping the most recent *keep_last* per session.
+
+        Args:
+            session_id: If provided, prune only this session. Otherwise prune all.
+            keep_last:  Number of most-recent messages to keep per session.
+
+        Returns:
+            Number of rows deleted.
+        """
+        if session_id:
+            rows = self._conn.execute(
+                """
+                DELETE FROM conversations
+                 WHERE session_id = ?
+                   AND id NOT IN (
+                       SELECT id FROM conversations
+                        WHERE session_id = ?
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                   )
+                """,
+                (session_id, session_id, keep_last),
+            )
+        else:
+            rows = self._conn.execute(
+                """
+                DELETE FROM conversations
+                 WHERE id NOT IN (
+                     SELECT id FROM (
+                         SELECT id, ROW_NUMBER() OVER (
+                             PARTITION BY session_id ORDER BY created_at DESC
+                         ) AS rn
+                         FROM conversations
+                     ) WHERE rn <= ?
+                 )
+                """,
+                (keep_last,),
+            )
+        count = self._conn.execute("SELECT changes()").fetchone()[0]
+        if count:
+            logger.debug("prune_conversations: deleted %d old rows.", count)
+        return count or 0
+
     # ── Usefulness ───────────────────────────────────────────────────────────
 
     def update_usefulness(self, memory_id: int, delta: float) -> None:
