@@ -99,14 +99,24 @@ class BrainAgent:
 
     async def process(self, user_input: str) -> TurnResult:
         """Process one user message. Returns TurnResult."""
-        # Wait for any pending background write to finish (don't cancel —
-        # knowledge extraction is important to persist).  Typical write takes
-        # 15-30s (2 concurrent LLM extractions + embedding + DB insert).
+        # Let background writes complete asynchronously — don't block the
+        # next conversation turn.  Facts will be available for retrieval
+        # once the write finishes (typically 15-30s later).
+        # Cancel only if it's been running for > 2 minutes (likely stuck).
         if self._write_task and not self._write_task.done():
+            # Check if task has been running too long (> 120s)
             try:
-                await asyncio.wait_for(self._write_task, timeout=60.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                pass
+                task_age = asyncio.get_event_loop().time() - getattr(
+                    self._write_task, '_start_time', 0
+                )
+            except Exception:
+                task_age = 0
+            if task_age > 120:
+                self._write_task.cancel()
+                try:
+                    await self._write_task
+                except (asyncio.CancelledError, Exception):
+                    pass
         self._current_tool_calls = []
         self._emit("turn_start", {"input": user_input})
 
@@ -202,9 +212,10 @@ class BrainAgent:
 
         self._emit("response_ready", {"response": response[:200]})
 
-        # 7. Async: extract and store new knowledge
+        # 7. Async: extract and store new knowledge (fire-and-forget)
         if self.writer:
             self._write_task = asyncio.create_task(self._async_write(user_input, response))
+            self._write_task._start_time = asyncio.get_event_loop().time()
 
         # 8. Retrieval feedback + procedure tracking
         if self.feedback and context and context.memories:
