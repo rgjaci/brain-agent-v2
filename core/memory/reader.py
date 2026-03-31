@@ -656,7 +656,7 @@ class MemoryReader:
     def format_for_context(
         self,
         result: RetrievalResult,
-        budget_tokens: int = 13_000,
+        budget_tokens: int = 11_000,
     ) -> str:
         """Format retrieval results as a prompt-ready context string.
 
@@ -665,9 +665,9 @@ class MemoryReader:
         middle.  Research suggests LLMs attend more to the beginning and end of
         long contexts ("lost in the middle" effect).
 
-        Token budget is estimated as ``len(text) // 4``.  Sections are
-        concatenated in order (KG facts → memories → procedures) until the
-        budget is exhausted.
+        Token budget uses tiktoken when available, else ``len(text) // 4``.
+        Sections are concatenated in order (KG facts → memories → procedures)
+        until the budget is exhausted.
 
         Memory format per item::
 
@@ -682,12 +682,19 @@ class MemoryReader:
             A single formatted string, or an empty string when no content is
             available.
         """
+        # Use heuristic token counting (len//4) for budget enforcement.
+        # The budget parameter was designed for this model, and the context
+        # assembler (which uses tiktoken) applies its own accurate budget
+        # when building the final LLM prompt.
+        def _count_tokens(text: str) -> int:
+            return max(1, len(text) // 4)
+
         parts: list[str] = []
         tokens_used = 0
 
         def _fits(text: str) -> bool:
             nonlocal tokens_used
-            cost = len(text) // 4
+            cost = _count_tokens(text)
             if tokens_used + cost > budget_tokens:
                 return False
             tokens_used += cost

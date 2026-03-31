@@ -127,7 +127,7 @@ class OllamaProvider(LLMProvider):
         base_url: str = "http://localhost:11434",
         temperature: float = 0.3,
         max_tokens: int = 2000,
-        timeout: int = 120,
+        timeout: int = 300,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -196,6 +196,10 @@ class OllamaProvider(LLMProvider):
                 "num_predict": tokens,
             },
         }
+        # Disable thinking mode for qwen3+ models (avoids huge <think> chains
+        # that break JSON parsing and cause timeouts with local inference)
+        if "qwen3" in self.model.lower() and "nothink" not in self.model.lower():
+            payload["think"] = False
         if system:
             payload["system"] = system
 

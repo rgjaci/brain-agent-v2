@@ -132,8 +132,13 @@ class TeachTool:
             # Embed if embedder available
             if self.embedder is not None:
                 try:
-                    embedding = await self.embedder.embed([content])
-                    self.db.insert_embedding(memory_id, embedding[0])
+                    embedding = self.embedder.embed([content])
+                    self.db.insert_embedding(
+                        table="memory_vectors",
+                        id_col="memory_id",
+                        rowid=memory_id,
+                        embedding=embedding[0],
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to embed taught memory: {e}")
 
@@ -180,8 +185,13 @@ class TeachTool:
             if self.embedder is not None:
                 try:
                     emb_text = f"{name} {description}"
-                    embedding = await self.embedder.embed([emb_text])
-                    self.db.insert_procedure_embedding(proc_id, embedding[0])
+                    embedding = self.embedder.embed([emb_text])
+                    self.db.insert_embedding(
+                        table="procedure_vectors",
+                        id_col="procedure_id",
+                        rowid=proc_id,
+                        embedding=embedding[0],
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to embed taught procedure: {e}")
 

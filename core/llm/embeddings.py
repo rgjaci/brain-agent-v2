@@ -167,9 +167,14 @@ class GeminiEmbeddingProvider:
         """
         self._rate_limit()
         try:
+            from google.genai import types as genai_types
+
             result = self._client.models.embed_content(
                 model=self.model,
                 contents=texts,
+                config=genai_types.EmbedContentConfig(
+                    outputDimensionality=self.dims,
+                ),
             )
             return [e.values for e in result.embeddings]
         except Exception as exc:

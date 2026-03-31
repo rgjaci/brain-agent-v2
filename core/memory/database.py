@@ -410,6 +410,39 @@ class MemoryDatabase:
         )
         return cursor.lastrowid  # type: ignore[return-value]
 
+    def insert_procedure(self, data: dict) -> int:
+        """Insert a procedure row from a dict. Returns the new row ID.
+
+        Args:
+            data: Dict with keys matching the procedures table columns
+                  (name, description, trigger_pattern, preconditions,
+                   steps, warnings, context, source).
+
+        Returns:
+            The ``id`` of the newly inserted row.
+        """
+        now = _now()
+        cursor = self._conn.execute(
+            """
+            INSERT INTO procedures
+                (name, description, trigger_pattern, preconditions,
+                 steps, warnings, context, source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("name", ""),
+                data.get("description", ""),
+                data.get("trigger_pattern", ""),
+                data.get("preconditions", "[]"),
+                data.get("steps", "[]"),
+                data.get("warnings", "[]"),
+                data.get("context", ""),
+                data.get("source", "learned"),
+                now,
+            ),
+        )
+        return cursor.lastrowid  # type: ignore[return-value]
+
     def get_memory(self, memory_id: int) -> Optional[dict[str, Any]]:
         """Fetch a single memory by primary key.
 

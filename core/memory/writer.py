@@ -499,8 +499,9 @@ class MemoryWriter:
         neighbours in the vector index, and discard the fact when cosine
         similarity exceeds *threshold*.
 
-        When sqlite-vec is unavailable the vector search returns an empty
-        list and all facts pass through (no false deduplication).
+        Cosine similarity is computed properly by fetching neighbour
+        embeddings from the database (L2 distance from sqlite-vec cannot
+        be trivially converted to cosine similarity without unit-normalising).
 
         Args:
             facts:     Candidate facts from :meth:`extract_facts`.
@@ -510,15 +511,35 @@ class MemoryWriter:
         Returns:
             Filtered list containing only novel facts.
         """
+        import struct as _struct
+        import math as _math
+
+        def _cosine_sim(a: list[float], b: list[float]) -> float:
+            if len(a) != len(b):
+                return 0.0
+            dot = sum(x * y for x, y in zip(a, b))
+            na = _math.sqrt(sum(x * x for x in a))
+            nb = _math.sqrt(sum(x * x for x in b))
+            if na == 0.0 or nb == 0.0:
+                return 0.0
+            return dot / (na * nb)
+
         unique: list[FactExtraction] = []
 
         for fact in facts:
             try:
-                embedding = await asyncio.to_thread(
-                    self.embedder.embed, fact.content
+                embedding_result = await asyncio.to_thread(
+                    self.embedder.embed, [fact.content]
                 )
+                # Handle both embed([text]) -> [[floats]] and embed(text) -> [floats]
+                query_emb = embedding_result[0] if (
+                    isinstance(embedding_result, list)
+                    and embedding_result
+                    and isinstance(embedding_result[0], (list, tuple))
+                ) else embedding_result
+
                 neighbours = self.db.vector_search(
-                    embedding=embedding,
+                    embedding=query_emb,
                     table="memory_vectors",
                     id_col="memory_id",
                     limit=5,
@@ -533,13 +554,24 @@ class MemoryWriter:
 
             is_duplicate = False
             for neighbour in neighbours:
-                distance = neighbour.get("distance", 1.0)
-                # sqlite-vec returns L2 distance for float vectors.
-                # Convert to cosine similarity: sim = 1 - (d² / 2) for
-                # unit-normalised vectors, but as a safe approximation we
-                # treat small distances as high similarity.
-                # A distance ≈ 0 means identical; we threshold on 1-distance.
-                similarity = 1.0 - min(distance, 1.0)
+                nid = neighbour["id"]
+                # Fetch neighbour embedding from DB for proper cosine similarity
+                try:
+                    rows = self.db.execute(
+                        "SELECT embedding FROM memory_vectors WHERE memory_id = ?",
+                        (nid,),
+                    )
+                    if not rows:
+                        continue
+                    blob = rows[0].get("embedding") if isinstance(rows[0], dict) else rows[0][0]
+                    if blob is None:
+                        continue
+                    n_floats = len(blob) // 4
+                    neighbor_emb = list(_struct.unpack(f"{n_floats}f", blob))
+                    similarity = _cosine_sim(query_emb, neighbor_emb)
+                except Exception:
+                    continue
+
                 if similarity >= threshold:
                     logger.debug(
                         "Duplicate fact skipped (sim=%.3f): %s",
@@ -639,14 +671,14 @@ class MemoryWriter:
 
         # Embed and store vector (potentially slow — run in thread)
         try:
-            embedding = await asyncio.to_thread(
-                self.embedder.embed, fact.content
+            embeddings = await asyncio.to_thread(
+                self.embedder.embed, [fact.content]
             )
             self.db.insert_embedding(
                 table="memory_vectors",
                 id_col="memory_id",
                 rowid=memory_id,
-                embedding=embedding,
+                embedding=embeddings[0],
             )
         except Exception:
             logger.exception(
@@ -700,14 +732,14 @@ class MemoryWriter:
         # Embed description for similarity retrieval
         try:
             embed_text = f"{proc.name}: {proc.description}"
-            embedding = await asyncio.to_thread(
-                self.embedder.embed, embed_text
+            embeddings = await asyncio.to_thread(
+                self.embedder.embed, [embed_text]
             )
             self.db.insert_embedding(
                 table="procedure_vectors",
                 id_col="procedure_id",
                 rowid=proc_id,
-                embedding=embedding,
+                embedding=embeddings[0],
             )
         except Exception:
             logger.exception(
@@ -785,8 +817,8 @@ class MemoryWriter:
     async def detect_contradictions(self, new_memory_id: int) -> list[int]:
         """Find existing memories that may contradict the newly stored one.
 
-        If similarity > 0.85 and content differs, marks old memories as
-        superseded_by the new one.
+        If cosine similarity > 0.85 and content differs, marks old memories
+        as superseded_by the new one.
 
         Args:
             new_memory_id: ID of the freshly stored memory.
@@ -794,17 +826,25 @@ class MemoryWriter:
         Returns:
             List of superseded memory IDs.
         """
+        import struct as _struct
+        import math as _math
+
         new_mem = self.db.get_memory(new_memory_id)
         if not new_mem:
             return []
 
         superseded: list[int] = []
         try:
-            embedding = await asyncio.to_thread(
-                self.embedder.embed, new_mem["content"]
+            embedding_result = await asyncio.to_thread(
+                self.embedder.embed, [new_mem["content"]]
             )
+            query_emb = embedding_result[0] if (
+                isinstance(embedding_result, list)
+                and embedding_result
+                and isinstance(embedding_result[0], (list, tuple))
+            ) else embedding_result
             neighbours = self.db.vector_search(
-                embedding=embedding,
+                embedding=query_emb,
                 table="memory_vectors",
                 id_col="memory_id",
                 limit=10,
@@ -812,12 +852,36 @@ class MemoryWriter:
         except Exception:
             return []
 
+        def _cosine_sim(a, b):
+            if len(a) != len(b):
+                return 0.0
+            dot = sum(x * y for x, y in zip(a, b))
+            na = _math.sqrt(sum(x * x for x in a))
+            nb = _math.sqrt(sum(x * x for x in b))
+            if na == 0.0 or nb == 0.0:
+                return 0.0
+            return dot / (na * nb)
+
         for neighbour in neighbours:
             nid = neighbour["id"]
             if nid == new_memory_id:
                 continue
-            distance = neighbour.get("distance", 1.0)
-            similarity = 1.0 - min(distance, 1.0)
+            try:
+                rows = self.db.execute(
+                    "SELECT embedding FROM memory_vectors WHERE memory_id = ?",
+                    (nid,),
+                )
+                if not rows:
+                    continue
+                blob = rows[0].get("embedding") if isinstance(rows[0], dict) else rows[0][0]
+                if blob is None:
+                    continue
+                n_floats = len(blob) // 4
+                neighbor_emb = list(_struct.unpack(f"{n_floats}f", blob))
+                similarity = _cosine_sim(query_emb, neighbor_emb)
+            except Exception:
+                continue
+
             if similarity > 0.85:
                 old_mem = self.db.get_memory(nid)
                 if old_mem and old_mem["content"] != new_mem["content"]:

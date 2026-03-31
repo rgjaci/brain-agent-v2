@@ -66,15 +66,26 @@ Available tools (use XML format):
 class ContextAssembler:
     """Pack the 32K context window optimally."""
 
+    _encoder = None  # shared class-level cache
+
     def __init__(self, llm=None):
         self.llm = llm
         self.budget = TOKEN_BUDGET.copy()
+        # Lazy-init tiktoken encoder once
+        if ContextAssembler._encoder is None:
+            try:
+                import tiktoken
+                ContextAssembler._encoder = tiktoken.get_encoding("cl100k_base")
+            except ImportError:
+                ContextAssembler._encoder = False  # mark unavailable
 
     def get_system_prompt(self) -> str:
         return SYSTEM_PROMPT
 
     def count_tokens(self, text: str) -> int:
-        """Estimate token count — 4 chars ≈ 1 token."""
+        """Count tokens using tiktoken when available, else heuristic."""
+        if ContextAssembler._encoder:
+            return max(1, len(ContextAssembler._encoder.encode(text)))
         return max(1, len(text) // 4)
 
     def assemble(

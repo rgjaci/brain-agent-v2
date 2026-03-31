@@ -56,13 +56,22 @@ def build_agent(args=None):
     except Exception as exc:
         logging.warning("LLM unavailable (%s) — running without LLM.", exc)
 
-    # Embedder — graceful degradation
+    # Embedder — graceful degradation with local fallback
     embedder = None
     try:
         from core.llm.embeddings import GeminiEmbeddingProvider
         embedder = GeminiEmbeddingProvider(api_key=cfg.gemini_api_key)
+        logging.info("Using Gemini embedding provider.")
     except Exception as exc:
-        logging.warning("Embedder unavailable (%s) — running without embeddings.", exc)
+        logging.warning("Gemini embedder unavailable (%s).", exc)
+        try:
+            from core.llm.embeddings import LocalEmbeddingProvider
+            embedder = LocalEmbeddingProvider()
+            logging.info("Falling back to local embedding provider.")
+        except Exception as exc2:
+            logging.warning(
+                "Local embedder also unavailable (%s) — running without embeddings.", exc2
+            )
 
     kg = KnowledgeGraph(db)
     feedback = RetrievalFeedbackCollector(db)
@@ -213,7 +222,9 @@ async def cmd_recall(agent, args) -> None:
         return
     import re
     safe = re.sub(r'[^\w\s]', ' ', query).strip()
-    results = agent.db.fts_search(safe, limit=10) if safe else []
+    # Use OR so any matching term returns results
+    fts_query = " OR ".join(safe.split()) if safe else ""
+    results = agent.db.fts_search(fts_query, limit=10) if fts_query else []
     if not results:
         print(f'No memories found for: "{query}"')
         return

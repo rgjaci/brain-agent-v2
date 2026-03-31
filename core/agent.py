@@ -91,6 +91,7 @@ class BrainAgent:
         self._current_tool_calls: list[dict] = []
         self._turn_count: int = 0
         self._last_active: float = 0.0
+        self._write_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------ #
     #  Main entry point                                                    #
@@ -98,6 +99,13 @@ class BrainAgent:
 
     async def process(self, user_input: str) -> TurnResult:
         """Process one user message. Returns TurnResult."""
+        # Cancel any pending background write so it doesn't block the LLM
+        if self._write_task and not self._write_task.done():
+            self._write_task.cancel()
+            try:
+                await self._write_task
+            except (asyncio.CancelledError, Exception):
+                pass
         self._current_tool_calls = []
         self._emit("turn_start", {"input": user_input})
 
@@ -110,10 +118,22 @@ class BrainAgent:
         memories_used = 0
         procedure_name = None
 
+        # Build session context from recent history (not session_id)
+        session_context_text = ""
+        if self.db:
+            try:
+                recent = self.db.get_recent_messages(self.session_id, limit=5)
+                session_context_text = " ".join(
+                    m.get("content", "") for m in recent if m.get("role") == "user"
+                )
+            except Exception:
+                pass
+
+        procedure_id = None
         if self.reader:
             self._emit("retrieval_start", {"query": user_input})
             try:
-                context = await self.reader.retrieve(user_input, self.session_id)
+                context = await self.reader.retrieve(user_input, session_context_text)
                 memories_used = len(context.memories) if context else 0
                 if context and context.procedures:
                     proc = context.procedures[0] if context.procedures else None
@@ -121,6 +141,10 @@ class BrainAgent:
                         procedure_name = (
                             proc.get("name") if isinstance(proc, dict)
                             else getattr(proc, "name", None)
+                        )
+                        procedure_id = (
+                            proc.get("id") if isinstance(proc, dict)
+                            else getattr(proc, "id", None)
                         )
                 self._emit("retrieval_done", {
                     "memories": memories_used,
@@ -179,16 +203,48 @@ class BrainAgent:
 
         # 7. Async: extract and store new knowledge
         if self.writer:
-            asyncio.create_task(self._async_write(user_input, response))
+            self._write_task = asyncio.create_task(self._async_write(user_input, response))
 
-        # 8. Log retrieval outcome (assume accepted)
-        if self.feedback:
+        # 8. Retrieval feedback + procedure tracking
+        if self.feedback and context and context.memories:
             try:
-                self.feedback.record_outcome(self.session_id, user_accepted=True)
-            except AttributeError:
-                pass  # record_outcome may not exist
+                # Record which memories were retrieved
+                memory_dicts = []
+                for m in context.memories:
+                    if hasattr(m, '__dataclass_fields__'):
+                        memory_dicts.append({
+                            "id": m.id, "content": m.content,
+                            "category": m.category, "importance": m.importance,
+                            "access_count": m.access_count, "rrf_score": m.rrf_score,
+                        })
+                    elif isinstance(m, dict):
+                        memory_dicts.append(m)
+                self.feedback.record_retrieval(user_input, memory_dicts, self.session_id)
+                # Implicit feedback: top 5 memories assumed referenced
+                referenced_ids = [m["id"] for m in memory_dicts[:5]]
+                self.feedback.record_reference(self.session_id, referenced_ids)
+                # Flush to DB
+                self.feedback.persist_retrieval_log(self.session_id)
             except Exception as e:
-                logger.warning(f"Feedback logging failed: {e}")
+                logger.warning(f"Feedback recording failed: {e}")
+
+        # 8b. Procedure success/failure tracking
+        if procedure_id is not None and self.db:
+            try:
+                from core.memory.procedures import ProcedureStore
+                proc_store = ProcedureStore(self.db)
+                agent_lower = response.lower()
+                failure_indicators = (
+                    "error:", "failed:", "i couldn't", "i'm unable",
+                    "unable to", "could not", "cannot complete", "exception:",
+                    "traceback", "permission denied", "not found", "timed out",
+                )
+                if any(ind in agent_lower for ind in failure_indicators):
+                    proc_store.record_failure(procedure_id)
+                else:
+                    proc_store.record_success(procedure_id)
+            except Exception as e:
+                logger.warning(f"Procedure tracking failed: {e}")
 
         # 9. Consolidation — run if idle > 300s
         import time
@@ -199,6 +255,12 @@ class BrainAgent:
                 await self.consolidator.maybe_consolidate(self._turn_count)
             except Exception as e:
                 logger.warning(f"Consolidation failed: {e}")
+            # Auto-train feedback reranker every consolidation cycle
+            if self.feedback and self._turn_count % 50 == 0:
+                try:
+                    self.feedback.maybe_auto_train(threshold=100)
+                except Exception as e:
+                    logger.warning(f"Auto-train failed: {e}")
         self._last_active = now
 
         return TurnResult(

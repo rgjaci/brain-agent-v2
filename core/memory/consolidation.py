@@ -187,72 +187,108 @@ class ConsolidationEngine:
         return await loop.run_in_executor(None, self._merge_near_duplicates_sync)
 
     def _merge_near_duplicates_sync(self) -> int:
-        """Synchronous implementation of near-duplicate merging."""
+        """Synchronous implementation of near-duplicate merging.
+
+        Uses ANN vector search (sqlite-vec) per embedding instead of
+        O(N²) pairwise comparison.  For each embedding, its 10 nearest
+        neighbours are fetched; pairs with cosine similarity > 0.95 are
+        merged.
+        """
+        import struct as _struct
+        import math as _math
+
+        def _cosine_sim(a: list[float], b: list[float]) -> float:
+            if len(a) != len(b):
+                return 0.0
+            dot = sum(x * y for x, y in zip(a, b))
+            na = _math.sqrt(sum(x * x for x in a))
+            nb = _math.sqrt(sum(x * x for x in b))
+            if na == 0.0 or nb == 0.0:
+                return 0.0
+            return dot / (na * nb)
+
         # Fetch all embeddings
         embeddings = self.db.get_all_embeddings(
-            table="memory_vectors", id_col="memory_id", limit=2000
+            table="memory_vectors", id_col="memory_id", limit=5000
         )
         if len(embeddings) < 2:
             return 0
 
-        n = len(embeddings)
         merge_count = 0
         deleted_ids: set[int] = set()
 
-        # Batch size for pairwise comparison to limit peak memory usage
-        BATCH = 200
+        for mem_id, emb in embeddings:
+            if mem_id in deleted_ids:
+                continue
 
-        for i in range(0, n, BATCH):
-            batch_i = embeddings[i: i + BATCH]
-            for j in range(i, n, BATCH):
-                batch_j = embeddings[j: j + BATCH]
-                for idx_i, (id_a, emb_a) in enumerate(batch_i):
-                    if id_a in deleted_ids:
+            # ANN search: find 10 nearest neighbours
+            try:
+                neighbours = self.db.vector_search(
+                    embedding=emb,
+                    table="memory_vectors",
+                    id_col="memory_id",
+                    limit=10,
+                )
+            except Exception:
+                continue
+
+            for neighbour in neighbours:
+                nid = neighbour["id"]
+                if nid == mem_id or nid in deleted_ids:
+                    continue
+
+                # Fetch neighbour embedding for proper cosine similarity
+                try:
+                    rows = self.db.execute(
+                        "SELECT embedding FROM memory_vectors WHERE memory_id = ?",
+                        (nid,),
+                    )
+                    if not rows:
                         continue
-                    start_j = idx_i + 1 if j == i else 0
-                    for idx_j, (id_b, emb_b) in enumerate(batch_j):
-                        if idx_j < start_j and j == i:
-                            continue
-                        if id_b in deleted_ids or id_a == id_b:
-                            continue
+                    blob = rows[0].get("embedding") if isinstance(rows[0], dict) else rows[0][0]
+                    if blob is None:
+                        continue
+                    n_floats = len(blob) // 4
+                    neighbor_emb = list(_struct.unpack(f"{n_floats}f", blob))
+                    sim = _cosine_sim(emb, neighbor_emb)
+                except Exception:
+                    continue
 
-                        sim = _cosine_similarity(emb_a, emb_b)
-                        if sim > 0.95:
-                            # Decide which memory to keep
-                            mem_a = self.db.get_memory(id_a)
-                            mem_b = self.db.get_memory(id_b)
+                if sim > 0.95:
+                    # Decide which memory to keep
+                    mem_a = self.db.get_memory(mem_id)
+                    mem_b = self.db.get_memory(nid)
 
-                            if mem_a is None or mem_b is None:
-                                continue
+                    if mem_a is None or mem_b is None:
+                        continue
 
-                            acc_a = int(mem_a.get("access_count", 0))
-                            acc_b = int(mem_b.get("access_count", 0))
+                    acc_a = int(mem_a.get("access_count", 0))
+                    acc_b = int(mem_b.get("access_count", 0))
 
-                            if acc_a >= acc_b:
-                                keep_id, drop_id = id_a, id_b
-                            else:
-                                keep_id, drop_id = id_b, id_a
+                    if acc_a >= acc_b:
+                        keep_id, drop_id = mem_id, nid
+                    else:
+                        keep_id, drop_id = nid, mem_id
 
-                            # Mark as superseded and delete the duplicate
-                            try:
-                                self.db.mark_superseded(drop_id, keep_id)
-                                self.db.execute(
-                                    "DELETE FROM memories WHERE id = ?",
-                                    (drop_id,),
-                                )
-                                deleted_ids.add(drop_id)
-                                merge_count += 1
-                                logger.debug(
-                                    "merge_near_duplicates: merged %d → %d "
-                                    "(sim=%.4f).",
-                                    drop_id, keep_id, sim,
-                                )
-                            except Exception as exc:  # noqa: BLE001
-                                logger.warning(
-                                    "merge_near_duplicates: could not merge "
-                                    "%d → %d — %s.",
-                                    drop_id, keep_id, exc,
-                                )
+                    # Mark as superseded and delete the duplicate
+                    try:
+                        self.db.mark_superseded(drop_id, keep_id)
+                        self.db.execute(
+                            "DELETE FROM memories WHERE id = ?",
+                            (drop_id,),
+                        )
+                        deleted_ids.add(drop_id)
+                        merge_count += 1
+                        logger.debug(
+                            "merge_near_duplicates: merged %d → %d (sim=%.4f).",
+                            drop_id, keep_id, sim,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "merge_near_duplicates: could not merge "
+                            "%d → %d — %s.",
+                            drop_id, keep_id, exc,
+                        )
 
         return merge_count
 
