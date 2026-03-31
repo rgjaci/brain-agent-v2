@@ -99,12 +99,13 @@ class BrainAgent:
 
     async def process(self, user_input: str) -> TurnResult:
         """Process one user message. Returns TurnResult."""
-        # Cancel any pending background write so it doesn't block the LLM
+        # Wait for any pending background write to finish (don't cancel —
+        # knowledge extraction is important to persist).  Typical write takes
+        # 10-20s (LLM extraction + embedding + DB insert), so we give 30s.
         if self._write_task and not self._write_task.done():
-            self._write_task.cancel()
             try:
-                await self._write_task
-            except (asyncio.CancelledError, Exception):
+                await asyncio.wait_for(self._write_task, timeout=30.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
         self._current_tool_calls = []
         self._emit("turn_start", {"input": user_input})

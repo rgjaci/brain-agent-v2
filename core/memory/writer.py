@@ -30,23 +30,24 @@ logger = logging.getLogger(__name__)
 # Prompt templates
 # ──────────────────────────────────────────────────────────────────────────────
 
-FACT_EXTRACTION_PROMPT = """Extract new facts from this exchange.
-Only extract genuinely NEW information — things not obvious or common knowledge.
-Focus on: user preferences, system configurations, project details, personal facts, corrections.
+FACT_EXTRACTION_PROMPT = """Extract facts about the USER from this conversation exchange.
+Focus on: names, preferences, tools, configurations, projects, personal details, opinions, corrections.
+Assume you are LEARNING about the user — extract anything specific they said about themselves.
 
 User: {user_msg}
 Assistant: {agent_msg}
 
-Return JSON array (or empty array [] if nothing new):
+Return JSON array (or empty array [] if truly nothing):
 [{{"content": "...", "category": "fact|preference|observation|correction", "importance": 0.1-1.0}}]
 
-Examples of good facts:
-- "User's domain is nhproject.org"
+Examples:
+- "User's name is Rei"
+- "User uses Arch Linux as daily driver"
+- "User programs in Rust for systems work"
 - "User prefers ed25519 SSH keys"
-- "Production server IP is 192.168.1.100"
-- "User uses .venv/ for Python virtual environments"
+- "Production server is at 192.168.1.100"
 
-Do NOT extract: greetings, generic statements, obvious truths."""
+Do NOT extract: pure greetings with no info, generic filler like "how are you"."""
 
 GRAPH_EXTRACTION_PROMPT = """Identify entities and relationships in this exchange.
 Only extract SPECIFIC, named entities — not generic words.
