@@ -212,9 +212,13 @@ class BrainAgent:
 
         self._emit("response_ready", {"response": response[:200]})
 
-        # 7. Async: extract and store new knowledge (fire-and-forget)
+        # 7. Async: extract and store new knowledge (fire-and-forget).
+        # Defer by 5s so the next turn's LLM call can start first and not
+        # compete for CPU with the background write's LLM extraction.
         if self.writer:
-            self._write_task = asyncio.create_task(self._async_write(user_input, response))
+            self._write_task = asyncio.create_task(
+                self._deferred_write(user_input, response)
+            )
             self._write_task._start_time = asyncio.get_event_loop().time()
 
         # 8. Retrieval feedback + procedure tracking
@@ -342,6 +346,11 @@ class BrainAgent:
     # ------------------------------------------------------------------ #
     #  Background tasks                                                    #
     # ------------------------------------------------------------------ #
+
+    async def _deferred_write(self, user_msg: str, agent_msg: str):
+        """Wait briefly then run the async write, so the next turn's LLM starts first."""
+        await asyncio.sleep(5)
+        await self._async_write(user_msg, agent_msg)
 
     async def _async_write(self, user_msg: str, agent_msg: str):
         """Extract and store knowledge from the just-completed exchange."""

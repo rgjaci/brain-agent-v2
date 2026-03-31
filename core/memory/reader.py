@@ -180,7 +180,7 @@ class MemoryReader:
         self,
         query: str,
         session_context: str = "",
-        n: int = 20,
+        n: int = 10,
     ) -> RetrievalResult:
         """Run the full hybrid retrieval pipeline.
 
@@ -227,6 +227,10 @@ class MemoryReader:
 
         # Slice to effective_n
         top_memories = reranked[:effective_n]
+
+        # Deduplicate document chunks — at most 3 per source file
+        # (avoids flooding retrieval results with redundant doc chunks)
+        top_memories = self._limit_doc_chunks(top_memories, max_per_doc=3)
 
         # 6. Entity extraction + KG traversal ─────────────────────────────────
         query_entities = self.extract_query_entities(query)
@@ -408,7 +412,7 @@ class MemoryReader:
                 rrf_score=score_info["rrf_score"],
                 dense_rank=score_info["dense_rank"],
                 sparse_rank=score_info["sparse_rank"],
-                source="memory",
+                source=row.get("source", "memory"),
                 metadata={
                     "created_at": row.get("created_at"),
                     "last_accessed": row.get("last_accessed"),
@@ -666,6 +670,27 @@ class MemoryReader:
             return []
 
     # ── Context formatting ────────────────────────────────────────────────────
+
+    def _limit_doc_chunks(
+        self, memories: list[RetrievedMemory], max_per_doc: int = 3
+    ) -> list[RetrievedMemory]:
+        """Cap document-sourced memories to *max_per_doc* per source file.
+
+        Prevents a single ingested document from dominating retrieval results.
+        Keeps the highest-scoring chunks per document.
+        """
+        from collections import defaultdict
+        doc_counts: dict[str, int] = defaultdict(int)
+        result = []
+        for mem in memories:
+            if mem.category == "document":
+                # Use the DB source field (e.g. "doc:/tmp/python_course.md")
+                doc_source = mem.source if mem.source.startswith("doc:") else f"doc:{mem.id}"
+                doc_counts[doc_source] += 1
+                if doc_counts[doc_source] > max_per_doc:
+                    continue
+            result.append(mem)
+        return result
 
     def format_for_context(
         self,

@@ -22,45 +22,28 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 TOKEN_BUDGET = {
-    "system_prompt": 500,
-    "procedure": 2000,
-    "kg_context": 1500,
-    "memories": 13000,
-    "chat_history": 6000,
-    "tool_buffer": 2000,
-    "output_reserve": 4000,
-    "query": 500,
-    "overhead": 1268,
+    "system_prompt": 400,
+    "procedure": 800,
+    "kg_context": 500,
+    "memories": 2000,
+    "chat_history": 2000,
+    "tool_buffer": 1500,
+    "output_reserve": 2000,
+    "query": 400,
+    "overhead": 400,
 }
 
 MAX_CONTEXT_TOKENS = 32768
 
-SYSTEM_PROMPT = """You are an AI assistant with access to a persistent memory system.
+SYSTEM_PROMPT = """You are an AI assistant with a persistent memory system. Answer using the provided memories and knowledge graph context. Be concise. If unsure, say so. Cite memories when relevant ("Based on what you told me..."). Prefer newer facts over older ones if they conflict.
 
-PROCEDURE (if provided): Follow these steps exactly. They are a proven approach to this type of problem. Adapt specifics to the current situation. Skip steps that don't apply and explain why.
-
-MEMORIES: These are facts and context from previous interactions. Treat them as ground truth unless they contradict each other (prefer newer ones).
-
-KG CONTEXT: These are entity relationships. Use them to understand how things connect.
-
-CHAT HISTORY: Recent conversation for continuity.
-
-When answering:
-1. If a PROCEDURE matches, follow it step-by-step
-2. Cite specific memories when making claims ("Based on what you told me earlier...")
-3. If you're unsure, say so — don't hallucinate
-4. If you need more information, use tools to get it
-5. Be concise unless asked for detail
-
-Available tools (use XML format):
-<tool name="bash"><param name="command">command here</param></tool>
-<tool name="read_file"><param name="path">/path/to/file</param></tool>
+Tools (XML format):
+<tool name="bash"><param name="command">cmd</param></tool>
+<tool name="read_file"><param name="path">/path</param></tool>
 <tool name="write_file"><param name="path">/path</param><param name="content">text</param></tool>
 <tool name="edit_file"><param name="path">/path</param><param name="old_str">old</param><param name="new_str">new</param></tool>
-<tool name="web_search"><param name="query">search terms</param></tool>
-<tool name="teach"><param name="content">fact or procedure to remember</param></tool>
-<tool name="recall"><param name="query">what to search for</param></tool>
-<tool name="ingest"><param name="path">/path/to/document</param></tool>"""
+<tool name="web_search"><param name="query">query</param></tool>
+<tool name="teach"><param name="content">fact to remember</param></tool>"""
 
 
 class ContextAssembler:
@@ -134,6 +117,9 @@ class ContextAssembler:
         memory_budget = min(memory_budget, budget.get("memories", 13000))
 
         if memories:
+            # Deduplicate document chunks — at most 3 per source document
+            # to avoid flooding the context with 14 nearly-identical chunks
+            memories = self._dedup_doc_chunks(memories, max_per_doc=3)
             ordered = self.apply_best_at_edges(memories)
             mem_text = self.pack_memories(ordered, memory_budget)
             if mem_text:
@@ -160,6 +146,35 @@ class ContextAssembler:
         messages.append({"role": "user", "content": query})
 
         return messages
+
+    def _dedup_doc_chunks(self, memories: list, max_per_doc: int = 3) -> list:
+        """Limit document-sourced memories to at most *max_per_doc* per source.
+
+        Document ingestion can produce 10+ chunks from a single file.
+        Injecting all of them floods the context with redundant text,
+        dramatically slowing LLM inference on small models.
+
+        Non-document memories pass through unchanged.
+        """
+        from collections import defaultdict
+        doc_counts: dict[str, int] = defaultdict(int)
+        result = []
+
+        for mem in memories:
+            if isinstance(mem, dict):
+                category = mem.get("category", "")
+                source = mem.get("source", "")
+            else:
+                category = getattr(mem, "category", "")
+                source = getattr(mem, "metadata", {}).get("source", "")
+
+            if category == "document" and source.startswith("doc:"):
+                doc_counts[source] += 1
+                if doc_counts[source] > max_per_doc:
+                    continue
+            result.append(mem)
+
+        return result
 
     def pack_memories(self, memories: list, budget_tokens: int = 13000) -> str:
         """Format and pack memories within token budget."""
