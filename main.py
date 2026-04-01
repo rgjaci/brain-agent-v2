@@ -90,6 +90,22 @@ def build_agent(args=None):
 
     consolidator = ConsolidationEngine(db, llm, embedder)
 
+    # AutoDream engine
+    dream_engine = None
+    if llm and embedder and cfg.dream_enabled:
+        from core.memory.dream import DreamEngine
+        dream_engine = DreamEngine(db, llm, embedder, consolidator, kg)
+
+    # System 2 Reasoning engine
+    reasoning_engine = None
+    if llm and embedder and cfg.reasoning_enabled:
+        from core.memory.reasoning import ReasoningEngine
+        reasoning_engine = ReasoningEngine(
+            db=db, llm=llm, embedder=embedder, kg=kg,
+            interval=cfg.reasoning_interval,
+            max_cycles=cfg.reasoning_max_cycles_per_session,
+        )
+
     assembler = None
     if llm:
         assembler = ContextAssembler(llm)
@@ -116,6 +132,8 @@ def build_agent(args=None):
         assembler=assembler,
         tool_executor=executor,
         feedback=feedback,
+        dream_engine=dream_engine,
+        reasoning_engine=reasoning_engine,
     )
     return agent, cfg
 
@@ -234,6 +252,33 @@ async def cmd_recall(agent, args) -> None:
             print(f"  {i}. [{mem.get('category', '?')}] {mem.get('content', '')}")
 
 
+async def cmd_dream(agent, args) -> None:
+    """Trigger an AutoDream cycle manually."""
+    if not agent.dream_engine:
+        print("AutoDream is not available (requires LLM + embedder).")
+        return
+    print("Starting AutoDream cycle (LLM-powered memory consolidation)...")
+    report = await agent.dream_engine.dream()
+    print(f"  abstractions created:   {report.abstractions_created}")
+    print(f"  contradictions resolved: {report.contradictions_resolved}")
+    print(f"  patterns detected:       {report.patterns_detected}")
+    print(f"  connections added:       {report.connections_added}")
+    print(f"  questions generated:     {report.questions_generated}")
+    print(f"  elapsed: {report.elapsed_seconds:.1f}s")
+    if report.errors:
+        print(f"  warnings: {len(report.errors)}")
+
+
+async def cmd_serve(agent, cfg, args) -> None:
+    """Start the MCP server for external agent integration."""
+    print("Starting Brain Agent MCP server...")
+    print(f"  transport: {cfg.mcp_transport}")
+    if cfg.mcp_transport == "sse":
+        print(f"  host: {cfg.mcp_host}:{cfg.mcp_port}")
+    from server.mcp_server import mcp as mcp_server
+    mcp_server.run()
+
+
 async def cmd_stats(agent, args) -> None:
     await _print_stats(agent)
 
@@ -264,6 +309,15 @@ def make_parser() -> argparse.ArgumentParser:
     recall_p = sub.add_parser("recall", help="Search memories")
     recall_p.add_argument("query", help="Search query")
 
+    sub.add_parser("dream", help="Trigger AutoDream (LLM-powered memory consolidation)")
+
+    serve_p = sub.add_parser("serve", help="Start MCP server for external agent integration")
+    serve_p.add_argument("--transport", default="stdio",
+                         choices=["stdio", "sse"],
+                         help="MCP transport (default: stdio)")
+    serve_p.add_argument("--port", type=int, default=8765,
+                         help="Port for SSE transport (default: 8765)")
+
     return p
 
 
@@ -279,6 +333,8 @@ def main() -> None:
         "teach":     lambda: cmd_teach(agent, args),
         "recall":    lambda: cmd_recall(agent, args),
         "stats":     lambda: cmd_stats(agent, args),
+        "dream":     lambda: cmd_dream(agent, args),
+        "serve":     lambda: cmd_serve(agent, cfg, args),
     }
     try:
         asyncio.run(handlers[cmd]())

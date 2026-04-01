@@ -72,6 +72,8 @@ class BrainAgent:
         tool_executor=None,
         feedback=None,
         consolidator=None,
+        dream_engine=None,
+        reasoning_engine=None,
         session_id: Optional[str] = None,
         on_event: Optional[Callable[[str, dict], None]] = None,
     ):
@@ -84,6 +86,8 @@ class BrainAgent:
         self.tool_executor = tool_executor
         self.feedback = feedback
         self.consolidator = consolidator
+        self.dream_engine = dream_engine
+        self.reasoning_engine = reasoning_engine
         self.session_id = session_id or str(uuid.uuid4())
         self.on_event = on_event  # TUI event hook: (event_type, data) -> None
 
@@ -273,6 +277,22 @@ class BrainAgent:
                     self.feedback.maybe_auto_train(threshold=100)
                 except Exception as e:
                     logger.warning(f"Auto-train failed: {e}")
+
+        # 10. AutoDream — LLM-powered memory consolidation
+        if self.dream_engine:
+            try:
+                dream_report = await self.dream_engine.maybe_dream(self._turn_count)
+                if dream_report:
+                    self._emit("dream_done", {
+                        "abstractions": dream_report.abstractions_created,
+                        "contradictions": dream_report.contradictions_resolved,
+                        "patterns": dream_report.patterns_detected,
+                        "connections": dream_report.connections_added,
+                        "questions": dream_report.questions_generated,
+                    })
+            except Exception as e:
+                logger.warning(f"AutoDream failed: {e}")
+
         self._last_active = now
 
         return TurnResult(
