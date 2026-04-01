@@ -90,6 +90,7 @@ if _TEXTUAL:
             Binding("ctrl+l", "clear_chat",   "Clear Chat",  show=True),
             Binding("ctrl+d", "toggle_debug", "Toggle Debug",show=True),
             Binding("ctrl+i", "ingest_file",  "Ingest File", show=True),
+            Binding("ctrl+r", "dream",         "Dream",       show=True),
             Binding("ctrl+enter", "send_message", "Send",    show=True),
             Binding("ctrl+q", "quit",          "Quit",        show=True),
         ]
@@ -100,7 +101,10 @@ if _TEXTUAL:
             self.config = config
             self._debug_shown = True
             if agent is not None:
-                agent._emit = self._on_agent_event   # wire event hook
+                agent.on_event = self._on_agent_event   # wire event hook
+                # Wire reasoning engine events too
+                if hasattr(agent, 'reasoning_engine') and agent.reasoning_engine:
+                    agent.reasoning_engine.on_event = self._on_agent_event
 
         # ── layout ───────────────────────────────────────────────────────────
 
@@ -131,7 +135,7 @@ if _TEXTUAL:
             )
             yield Static(
                 "Ctrl+Enter send  |  Ctrl+I ingest  |  "
-                "Ctrl+B bootstrap  |  Ctrl+Q quit",
+                "Ctrl+R dream  |  Ctrl+B bootstrap  |  Ctrl+Q quit",
                 id="input-hint",
             )
             yield Footer()
@@ -144,6 +148,11 @@ if _TEXTUAL:
                 "Type a message and press [bold]Ctrl+Enter[/bold] to send, "
                 "or [bold]Ctrl+I[/bold] to ingest a file."
             )
+            # Start reasoning engine if available
+            if (self.agent
+                    and hasattr(self.agent, 'reasoning_engine')
+                    and self.agent.reasoning_engine):
+                asyncio.create_task(self.agent.reasoning_engine.start())
             # Focus the input
             self.call_after_refresh(self._focus_input)
 
@@ -255,6 +264,21 @@ if _TEXTUAL:
                     f"[bold blue][CONS][/bold blue] "
                     f"consolidated {n} memories"
                 )
+            elif event_type == "dream_done":
+                a = data.get("abstractions", 0)
+                c = data.get("contradictions", 0)
+                p = data.get("patterns", 0)
+                q = data.get("questions", 0)
+                debug.write(
+                    f"[bold magenta][DREAM][/bold magenta] "
+                    f"+{a} abstractions  {c} contradictions  "
+                    f"+{p} patterns  +{q} questions"
+                )
+            elif event_type in ("reasoning_insight", "reasoning_start"):
+                topic = data.get("focus", data.get("topic", "?"))
+                debug.write(
+                    f"[bold cyan][THINK][/bold cyan] {topic}"
+                )
 
         # ── stat panels ───────────────────────────────────────────────────────
 
@@ -363,6 +387,24 @@ if _TEXTUAL:
 
             except Exception as exc:
                 chat.write(f"[red]Ingest error: {exc}[/red]")
+
+        async def action_dream(self) -> None:
+            """Trigger an AutoDream cycle."""
+            debug = self.query_one("#debug-log", RichLog)
+            debug.write("[bold magenta][DREAM][/bold magenta] starting dream cycle…")
+            if self.agent and self.agent.dream_engine:
+                report = await self.agent.dream_engine.dream()
+                debug.write(
+                    f"[bold magenta][DREAM][/bold magenta] done — "
+                    f"+{report.abstractions_created} abstractions, "
+                    f"{report.contradictions_resolved} contradictions resolved, "
+                    f"+{report.patterns_detected} patterns, "
+                    f"+{report.questions_generated} questions "
+                    f"({report.elapsed_seconds:.1f}s)"
+                )
+                self._refresh_stats()
+            else:
+                debug.write("[dim][DREAM] not available (requires LLM + embedder)[/dim]")
 
         def action_toggle_debug(self) -> None:
             panel = self.query_one("#debug-panel")

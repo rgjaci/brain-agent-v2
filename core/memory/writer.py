@@ -41,7 +41,15 @@ User: {user_msg}
 Assistant: {agent_msg}
 
 Return a JSON array of facts. Format:
-[{{"content": "User [verb] ...", "category": "fact|preference|observation|correction", "importance": 0.1-1.0}}]
+[{{"content": "User [verb] ...", "category": "fact|preference|observation|correction|knowledge|rule", "importance": 0.1-1.0}}]
+
+Categories:
+- fact: specific personal info (name, location, job)
+- preference: likes, dislikes, tool choices
+- observation: things noticed about user's environment or behavior
+- correction: corrects a previous wrong assumption
+- knowledge: domain knowledge or technical information
+- rule: learned heuristics or guidelines ("always do X when Y")
 
 Example output for "I'm Sarah and I use Neovim":
 [{{"content": "User's name is Sarah", "category": "fact", "importance": 0.9}}, {{"content": "User uses Neovim", "category": "preference", "importance": 0.7}}]"""
@@ -207,20 +215,35 @@ class MemoryWriter:
             unique_facts = facts
 
         # ── 5: Embed & store facts ─────────────────────────────────────────
+        stored_memory_ids: list[int] = []
         for fact in unique_facts:
             try:
-                await self._store_fact(fact, session_id)
+                mid = await self._store_fact(
+                    fact, source="agent",
+                    source_type="conversation", source_id=session_id,
+                )
+                stored_memory_ids.append(mid)
             except Exception:
                 logger.exception("Failed to store fact: %s", fact.content[:80])
 
-        # ── 6: Upsert KG ──────────────────────────────────────────────────
+        # ── 6: Upsert KG + link memories to entities ─────────────────────
+        entity_ids: list[int] = []
         for entity in entities_raw:
             try:
-                self.kg.upsert_entity(entity)
+                eid = self.kg.upsert_entity(entity)
+                entity_ids.append(eid)
             except Exception:
                 logger.exception(
                     "Failed to upsert entity: %s", entity.name
                 )
+
+        # Cross-link: every new memory ↔ every extracted entity
+        for mid in stored_memory_ids:
+            for eid in entity_ids:
+                try:
+                    self.db.link_memory_entity(mid, eid)
+                except Exception:
+                    pass
 
         for relation in relations_raw:
             try:
@@ -648,12 +671,20 @@ class MemoryWriter:
 
     # ── Internal helpers ───────────────────────────────────────────────────────
 
-    async def _store_fact(self, fact: FactExtraction, source: str = "agent") -> int:
+    async def _store_fact(
+        self,
+        fact: FactExtraction,
+        source: str = "agent",
+        source_type: str = "conversation",
+        source_id: str = "",
+    ) -> int:
         """Embed a fact and write it to the memories + vector tables.
 
         Args:
-            fact:   The :class:`FactExtraction` to persist.
-            source: Provenance label stored in the ``memories.source`` column.
+            fact:        The :class:`FactExtraction` to persist.
+            source:      Provenance label stored in the ``memories.source`` column.
+            source_type: Origin type for memory_sources linking.
+            source_id:   Origin identifier for memory_sources linking.
 
         Returns:
             The new memory row ID.
@@ -666,6 +697,13 @@ class MemoryWriter:
             importance=fact.importance,
             confidence=1.0,
         )
+
+        # Link to source for traceability
+        if source_id:
+            try:
+                self.db.link_memory_source(memory_id, source_type, source_id)
+            except Exception:
+                logger.debug("Failed to link memory %d to source.", memory_id)
 
         # Embed and store vector (potentially slow — run in thread)
         try:

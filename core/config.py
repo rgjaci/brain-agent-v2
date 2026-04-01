@@ -96,6 +96,21 @@ class AgentConfig:
     # ── Permissions ───────────────────────────────────────────────────────────
     permissions: PermissionsConfig = field(default_factory=PermissionsConfig)
 
+    # ── AutoDream ─────────────────────────────────────────────────────────────
+    dream_enabled: bool = True
+    dream_interval_turns: int = 50
+    dream_idle_threshold: int = 600
+
+    # ── System 2 Reasoning ───────────────────────────────────────────────────
+    reasoning_enabled: bool = True
+    reasoning_interval: int = 180  # seconds between cycles
+    reasoning_max_cycles_per_session: int = 100
+
+    # ── MCP Server ───────────────────────────────────────────────────────────
+    mcp_transport: str = "stdio"
+    mcp_host: str = "localhost"
+    mcp_port: int = 8765
+
     # ── Debug ─────────────────────────────────────────────────────────────────
     debug_mode: bool = False
     debug_file: Optional[Path] = None

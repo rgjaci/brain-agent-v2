@@ -204,6 +204,25 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 """
 
+_DDL_MEMORY_SOURCES = """
+CREATE TABLE IF NOT EXISTS memory_sources (
+    memory_id   INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    source_type TEXT    NOT NULL,
+    source_id   TEXT    NOT NULL,
+    created_at  REAL    NOT NULL,
+    PRIMARY KEY (memory_id, source_type, source_id)
+);
+"""
+
+_DDL_MEMORY_ENTITY_LINKS = """
+CREATE TABLE IF NOT EXISTS memory_entity_links (
+    memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    entity_id INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    created_at REAL   NOT NULL,
+    PRIMARY KEY (memory_id, entity_id)
+);
+"""
+
 _DDL_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_memories_category    ON memories(category);
 CREATE INDEX IF NOT EXISTS idx_memories_source      ON memories(source);
@@ -237,6 +256,12 @@ CREATE INDEX IF NOT EXISTS idx_conversations_role    ON conversations(role);
 
 CREATE INDEX IF NOT EXISTS idx_memories_usefulness ON memories(usefulness_score DESC);
 CREATE INDEX IF NOT EXISTS idx_relations_valid     ON relations(valid_until);
+
+CREATE INDEX IF NOT EXISTS idx_memory_sources_type ON memory_sources(source_type);
+CREATE INDEX IF NOT EXISTS idx_memory_sources_sid  ON memory_sources(source_id);
+
+CREATE INDEX IF NOT EXISTS idx_mel_entity ON memory_entity_links(entity_id);
+CREATE INDEX IF NOT EXISTS idx_mel_memory ON memory_entity_links(memory_id);
 """
 
 
@@ -339,6 +364,8 @@ class MemoryDatabase:
             self._conn.executescript(_DDL_DOCUMENTS)
             self._conn.executescript(_DDL_DOCUMENT_SECTIONS)
             self._conn.executescript(_DDL_CONVERSATIONS)
+            self._conn.executescript(_DDL_MEMORY_SOURCES)
+            self._conn.executescript(_DDL_MEMORY_ENTITY_LINKS)
             self._conn.executescript(_DDL_INDEXES)
 
             # Vector tables — only when extension is available
@@ -960,3 +987,145 @@ class MemoryDatabase:
         """Return the total number of rows in the memories table."""
         row = self._conn.execute("SELECT COUNT(*) AS n FROM memories").fetchone()
         return int(row["n"]) if row else 0
+
+    # ── Memory source linking ───────────────────────────────────────────────
+
+    def link_memory_source(
+        self, memory_id: int, source_type: str, source_id: str
+    ) -> None:
+        """Link a memory to its origin (conversation, document, dream, etc.).
+
+        Args:
+            memory_id:   The memory row ID.
+            source_type: Origin type (``"conversation"``, ``"document"``,
+                         ``"dream"``, ``"reasoning"``).
+            source_id:   Identifier for the source (session ID, document ID, etc.).
+        """
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO memory_sources
+                (memory_id, source_type, source_id, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (memory_id, source_type, source_id, _now()),
+        )
+
+    def get_memory_sources(self, memory_id: int) -> list[dict[str, Any]]:
+        """Return all source links for a memory.
+
+        Args:
+            memory_id: The memory row ID.
+
+        Returns:
+            List of ``{"source_type": str, "source_id": str, "created_at": float}`` dicts.
+        """
+        rows = self._conn.execute(
+            "SELECT source_type, source_id, created_at FROM memory_sources WHERE memory_id = ?",
+            (memory_id,),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    def get_memories_by_source(
+        self, source_type: str, source_id: str
+    ) -> list[dict[str, Any]]:
+        """Return all memories originating from a specific source.
+
+        Args:
+            source_type: Origin type to filter by.
+            source_id:   Source identifier to filter by.
+
+        Returns:
+            List of full memory dicts.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT m.* FROM memories m
+              JOIN memory_sources ms ON ms.memory_id = m.id
+             WHERE ms.source_type = ? AND ms.source_id = ?
+             ORDER BY m.created_at DESC
+            """,
+            (source_type, source_id),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    # ── Memory ↔ Entity linking ─────────────────────────────────────────────
+
+    def link_memory_entity(self, memory_id: int, entity_id: int) -> None:
+        """Link a memory to a knowledge-graph entity.
+
+        Args:
+            memory_id: The memory row ID.
+            entity_id: The entity row ID.
+        """
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO memory_entity_links
+                (memory_id, entity_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (memory_id, entity_id, _now()),
+        )
+
+    def get_memory_entities(self, memory_id: int) -> list[dict[str, Any]]:
+        """Return all entities linked to a memory.
+
+        Args:
+            memory_id: The memory row ID.
+
+        Returns:
+            List of entity dicts.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT e.* FROM entities e
+              JOIN memory_entity_links mel ON mel.entity_id = e.id
+             WHERE mel.memory_id = ?
+            """,
+            (memory_id,),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    def get_entity_memories(self, entity_id: int) -> list[dict[str, Any]]:
+        """Return all memories linked to an entity.
+
+        Args:
+            entity_id: The entity row ID.
+
+        Returns:
+            List of memory dicts.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT m.* FROM memories m
+              JOIN memory_entity_links mel ON mel.memory_id = m.id
+             WHERE mel.entity_id = ?
+             ORDER BY m.importance DESC, m.created_at DESC
+            """,
+            (entity_id,),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    def get_related_memories(self, memory_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        """Return memories that share entities with the given memory.
+
+        Args:
+            memory_id: The pivot memory row ID.
+            limit:     Maximum results.
+
+        Returns:
+            List of related memory dicts (excluding the pivot itself).
+        """
+        rows = self._conn.execute(
+            """
+            SELECT DISTINCT m.* FROM memories m
+              JOIN memory_entity_links mel ON mel.memory_id = m.id
+             WHERE mel.entity_id IN (
+                 SELECT entity_id FROM memory_entity_links WHERE memory_id = ?
+             )
+               AND m.id != ?
+             ORDER BY m.importance DESC
+             LIMIT ?
+            """,
+            (memory_id, memory_id, limit),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
