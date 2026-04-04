@@ -1,8 +1,8 @@
 """Tests for KnowledgeGraph — entity/relation CRUD and traversal."""
 from __future__ import annotations
-import pytest
+
 from core.memory.database import MemoryDatabase
-from core.memory.kg import KnowledgeGraph, Entity, Relation
+from core.memory.kg import Entity, KnowledgeGraph, Relation
 
 
 def make_kg():
@@ -61,7 +61,7 @@ def test_upsert_relation_same_pair_twice():
     kg.upsert_entity(Entity("User", "person", "the user"))
     kg.upsert_entity(Entity("Tailscale", "service", "VPN"))
     r1 = kg.upsert_relation(Relation("User", "Tailscale", "uses"))
-    r2 = kg.upsert_relation(Relation("User", "Tailscale", "uses"))
+    kg.upsert_relation(Relation("User", "Tailscale", "uses"))
     # First should succeed; second may be duplicate (None) or new id
     assert r1 is not None  # at minimum first insert works
 

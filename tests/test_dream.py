@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock
 
 
 @pytest.fixture
@@ -165,7 +166,7 @@ async def test_strengthen_connections_empty(dream_engine):
 async def test_strengthen_connections_with_entities(dream_engine, db, mock_llm):
     """New relations should be added for under-connected entities."""
     eid1 = db.insert_entity("Python", entity_type="language")
-    eid2 = db.insert_entity("Django", entity_type="tool")
+    db.insert_entity("Django", entity_type="tool")
 
     mock_llm.generate_json = MagicMock(return_value=[
         {"source": "Django", "target": "Python", "type": "depends_on", "confidence": 0.9, "reasoning": "Django is a Python framework"}

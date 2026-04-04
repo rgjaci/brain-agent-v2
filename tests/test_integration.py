@@ -1,18 +1,20 @@
 """End-to-end integration test mocking providers, running agent.process()."""
 from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 
 
 @pytest.fixture
 def integration_agent(db):
     """Build a fully wired agent with mocked LLM and embedder."""
     from core.agent import BrainAgent
-    from core.memory.kg import KnowledgeGraph
-    from core.memory.writer import MemoryWriter
-    from core.memory.reader import MemoryReader
-    from core.memory.feedback import RetrievalFeedbackCollector
     from core.context.assembler import ContextAssembler
+    from core.memory.feedback import RetrievalFeedbackCollector
+    from core.memory.kg import KnowledgeGraph
+    from core.memory.reader import MemoryReader
+    from core.memory.writer import MemoryWriter
     from core.tools.executor import ToolExecutor
 
     mock_llm = MagicMock()

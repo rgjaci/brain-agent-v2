@@ -1,12 +1,16 @@
 """Tests for memory/documents.py — DocumentIngester."""
 from __future__ import annotations
+
 import os
 import tempfile
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from core.memory.documents import (
-    DocumentIngester, DocumentChunk,
-    SUPPORTED_EXTENSIONS, MAX_CHUNK_SIZE, CHUNK_OVERLAP, MAX_FILE_SIZE,
+    CHUNK_OVERLAP,
+    MAX_CHUNK_SIZE,
+    DocumentIngester,
 )
 
 

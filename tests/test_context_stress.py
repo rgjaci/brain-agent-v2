@@ -1,7 +1,7 @@
 """Stress test for context assembly — 500 memories, token budget enforcement."""
 from __future__ import annotations
+
 import random
-import pytest
 from unittest.mock import MagicMock
 
 
@@ -9,11 +9,11 @@ def test_context_assembly_500_memories_token_budget():
     """Create 500 memories of varying lengths, assemble context,
     assert total tokens never exceed 32768, assert at least 3 memories included."""
     from core.context.assembler import ContextAssembler
-    from core.memory.reader import RetrievedMemory, RetrievalResult
+    from core.memory.reader import RetrievalResult, RetrievedMemory
 
     mock_llm = MagicMock()
     mock_llm.count_tokens = MagicMock(side_effect=lambda t: max(1, len(t) // 4))
-    assembler = ContextAssembler(mock_llm)
+    ContextAssembler(mock_llm)
 
     # Generate 500 memories with varying content length
     random.seed(42)
@@ -74,7 +74,7 @@ def test_context_assembly_empty_memories():
 
     mock_llm = MagicMock()
     mock_llm.count_tokens = MagicMock(return_value=1)
-    assembler = ContextAssembler(mock_llm)
+    ContextAssembler(mock_llm)
 
     result = RetrievalResult(
         memories=[], kg_context="", procedures=[],

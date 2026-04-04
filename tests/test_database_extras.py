@@ -1,8 +1,5 @@
 """Tests for database.py new methods and schema additions."""
 from __future__ import annotations
-import time
-import pytest
-
 
 # ── store_conversation / get_recent_messages ─────────────────────────────────
 

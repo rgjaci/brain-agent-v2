@@ -6,16 +6,23 @@ Supports:
 """
 from __future__ import annotations
 
-import asyncio
 import logging
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from core.llm.embeddings import GeminiEmbeddingProvider
+    from core.memory.database import MemoryDatabase
+    from core.memory.documents import DocumentIngester
+    from core.memory.writer import MemoryWriter
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ToolResult:
+    """Result of a tool execution."""
     tool_name: str
     success: bool
     output: str
@@ -23,25 +30,33 @@ class ToolResult:
 
 
 class ToolExecutor:
-    """Route tool calls to the correct tool implementation."""
+    """Route tool calls to the correct tool implementation.
+
+    Args:
+        permissions: Permission configuration dict.
+        db: MemoryDatabase instance for recall/teach operations.
+        embedder: Embedding provider for vector search in recall.
+        writer: MemoryWriter for web_search fact extraction.
+        ingester: DocumentIngester for document ingestion.
+    """
 
     def __init__(
         self,
-        permissions: Optional[dict] = None,
-        db=None,
-        embedder=None,
-        writer=None,
-        ingester=None,
-    ):
+        permissions: dict[str, Any] | None = None,
+        db: MemoryDatabase | None = None,
+        embedder: GeminiEmbeddingProvider | None = None,
+        writer: MemoryWriter | None = None,
+        ingester: DocumentIngester | None = None,
+    ) -> None:
         self.db = db
         self.embedder = embedder
 
         # Import here to avoid circular issues at module load time
         from .bash import BashTool
         from .file_ops import FileOpsTool
-        from .web_search import WebSearchTool
-        from .teach import TeachTool
         from .ingest import IngestTool
+        from .teach import TeachTool
+        from .web_search import WebSearchTool
 
         self.bash_tool = BashTool(permissions=permissions)
         self.file_ops = FileOpsTool(permissions=permissions)
@@ -50,7 +65,7 @@ class ToolExecutor:
         self.ingest_tool = IngestTool(ingester=ingester)
 
         # Tool registry: name → handler method
-        self._handlers = {
+        self._handlers: dict[str, Callable[[dict[str, Any]], Coroutine[Any, Any, str]]] = {
             "bash": self._run_bash,
             "read_file": self._run_read_file,
             "write_file": self._run_write_file,
@@ -61,8 +76,16 @@ class ToolExecutor:
             "ingest": self._run_ingest,
         }
 
-    async def execute(self, tool_name: str, params: dict) -> ToolResult:
-        """Dispatch a tool call. Always returns ToolResult (never raises)."""
+    async def execute(self, tool_name: str, params: dict[str, Any]) -> ToolResult:
+        """Dispatch a tool call. Always returns ToolResult (never raises).
+
+        Args:
+            tool_name: Name of the tool to execute.
+            params: Parameters to pass to the tool.
+
+        Returns:
+            ToolResult with success status and output/error message.
+        """
         handler = self._handlers.get(tool_name)
         if handler is None:
             return ToolResult(
@@ -88,16 +111,18 @@ class ToolExecutor:
     #  Handlers                                                            #
     # ------------------------------------------------------------------ #
 
-    async def _run_bash(self, params: dict) -> str:
+    async def _run_bash(self, params: dict[str, Any]) -> str:
+        """Execute a bash command."""
         command = params.get("command", "").strip()
-        timeout = params.get("timeout", None)
-        workdir = params.get("workdir", None)
+        timeout = params.get("timeout")
+        workdir = params.get("workdir")
         if timeout is not None:
             timeout = int(timeout)
         result = await self.bash_tool.execute(command, timeout=timeout, workdir=workdir)
         return self.bash_tool.format_result(result)
 
-    async def _run_read_file(self, params: dict) -> str:
+    async def _run_read_file(self, params: dict[str, Any]) -> str:
+        """Read file contents."""
         path = params.get("path", "").strip()
         start = params.get("start_line")
         end = params.get("end_line")
@@ -108,14 +133,16 @@ class ToolExecutor:
         result = self.file_ops.read_file(path, start_line=start, end_line=end)
         return self.file_ops.format_result(result)
 
-    async def _run_write_file(self, params: dict) -> str:
+    async def _run_write_file(self, params: dict[str, Any]) -> str:
+        """Write content to a file."""
         path = params.get("path", "").strip()
         content = params.get("content", "")
         append = bool(params.get("append", False))
         result = self.file_ops.write_file(path, content, append=append)
         return self.file_ops.format_result(result)
 
-    async def _run_edit_file(self, params: dict) -> str:
+    async def _run_edit_file(self, params: dict[str, Any]) -> str:
+        """Edit a file by replacing a string."""
         path = params.get("path", "").strip()
         old_str = params.get("old_str", "")
         new_str = params.get("new_str", "")
@@ -123,13 +150,15 @@ class ToolExecutor:
         result = self.file_ops.edit_file(path, old_str, new_str, replace_all=replace_all)
         return self.file_ops.format_result(result)
 
-    async def _run_web_search(self, params: dict) -> str:
+    async def _run_web_search(self, params: dict[str, Any]) -> str:
+        """Search the web using DuckDuckGo."""
         query = params.get("query", "").strip()
         max_results = int(params.get("max_results", 5))
         result = await self.web_search_tool.execute(query, max_results=max_results)
         return self.web_search_tool.format_result(result)
 
-    async def _run_teach(self, params: dict) -> str:
+    async def _run_teach(self, params: dict[str, Any]) -> str:
+        """Teach a fact directly to the agent."""
         if self.teach_tool is None:
             return "[TEACH ERROR] Database not configured"
         content = params.get("content", "").strip()
@@ -137,7 +166,7 @@ class ToolExecutor:
         result = await self.teach_tool.execute(content, category=category)
         return self.teach_tool.format_result(result)
 
-    async def _run_recall(self, params: dict) -> str:
+    async def _run_recall(self, params: dict[str, Any]) -> str:
         """Explicit memory search — hybrid FTS5 + vector search with RRF merge."""
         if self.db is None:
             return "[RECALL ERROR] Database not configured"
@@ -203,10 +232,11 @@ class ToolExecutor:
             True if network access is permitted for this tool.
         """
         # Tools that inherently require network access
-        network_tools = {"web_search", "ingest"}
+        network_tools: set[str] = {"web_search", "ingest"}
         return tool_name in network_tools
 
-    async def _run_ingest(self, params: dict) -> str:
+    async def _run_ingest(self, params: dict[str, Any]) -> str:
+        """Ingest a file or directory into memory."""
         path = params.get("path", "").strip()
         recursive = bool(params.get("recursive", False))
         result = await self.ingest_tool.execute(path, recursive=recursive)

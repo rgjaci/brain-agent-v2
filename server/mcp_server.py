@@ -26,13 +26,8 @@ Claude Code config (``~/.claude/claude_code_config.json``)::
 """
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import re
-import sys
-from pathlib import Path
-from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -366,15 +361,9 @@ def kg_add_relation(
     src = _db.get_entity(name=source_entity)
     tgt = _db.get_entity(name=target_entity)
 
-    if not src:
-        src_id = _db.upsert_entity(name=source_entity, source="mcp")
-    else:
-        src_id = src["id"]
+    src_id = _db.upsert_entity(name=source_entity, source="mcp") if not src else src["id"]
 
-    if not tgt:
-        tgt_id = _db.upsert_entity(name=target_entity, source="mcp")
-    else:
-        tgt_id = tgt["id"]
+    tgt_id = _db.upsert_entity(name=target_entity, source="mcp") if not tgt else tgt["id"]
 
     rid = _db.insert_relation(
         source_id=src_id,

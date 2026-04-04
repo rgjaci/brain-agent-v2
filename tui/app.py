@@ -11,9 +11,7 @@ Layout:
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Optional
+import contextlib
 
 try:
     from textual.app import App, ComposeResult
@@ -92,6 +90,8 @@ if _TEXTUAL:
             Binding("ctrl+i", "ingest_file",  "Ingest File", show=True),
             Binding("ctrl+r", "dream",         "Dream",       show=True),
             Binding("ctrl+enter", "send_message", "Send",    show=True),
+            Binding("ctrl+up", "feedback_good", "👍 Good",   show=True),
+            Binding("ctrl+down", "feedback_bad", "👎 Bad",   show=True),
             Binding("ctrl+q", "quit",          "Quit",        show=True),
         ]
 
@@ -100,6 +100,7 @@ if _TEXTUAL:
             self.agent  = agent
             self.config = config
             self._debug_shown = True
+            self._last_turn_result = None  # Track last turn for feedback
             if agent is not None:
                 agent.on_event = self._on_agent_event   # wire event hook
                 # Wire reasoning engine events too
@@ -152,15 +153,15 @@ if _TEXTUAL:
             if (self.agent
                     and hasattr(self.agent, 'reasoning_engine')
                     and self.agent.reasoning_engine):
-                asyncio.create_task(self.agent.reasoning_engine.start())
+                self._reasoning_task = asyncio.create_task(
+                    self.agent.reasoning_engine.start()
+                )
             # Focus the input
             self.call_after_refresh(self._focus_input)
 
         def _focus_input(self) -> None:
-            try:
+            with contextlib.suppress(Exception):
                 self.query_one("#user-input", TextArea).focus()
-            except Exception:
-                pass
 
         # ── input handling ────────────────────────────────────────────────────
 
@@ -171,7 +172,7 @@ if _TEXTUAL:
             if not text:
                 return
             textarea.text = ""
-            asyncio.create_task(self._handle_turn(text))
+            self._turn_task = asyncio.create_task(self._handle_turn(text))
 
         async def _handle_turn(self, user_input: str) -> None:
             chat  = self.query_one("#chat-log",  RichLog)
@@ -195,6 +196,7 @@ if _TEXTUAL:
                     names = ", ".join(t.get("name", "?")
                                      for t in result.tool_calls)
                     chat.write(f"[dim]  ↳ tools: {names}[/dim]")
+                self._last_turn_result = result  # Store for feedback
                 self._refresh_stats()
             except asyncio.CancelledError:
                 pass
@@ -202,6 +204,26 @@ if _TEXTUAL:
                 spin_task.cancel()
                 chat.write(f"[bold red]Error:[/bold red] {exc}")
                 debug.write(f"[red]EXCEPTION: {exc}[/red]")
+
+        # ── feedback actions ──────────────────────────────────────────────────
+
+        async def action_feedback_good(self) -> None:
+            """Mark the last agent response as good (thumbs up)."""
+            if self.agent is None or self._last_turn_result is None:
+                return
+            self.agent.record_feedback(accepted=True)
+            chat = self.query_one("#chat-log", RichLog)
+            chat.write("[dim]👍 Feedback recorded — response was helpful[/dim]")
+            self._last_turn_result = None
+
+        async def action_feedback_bad(self) -> None:
+            """Mark the last agent response as bad (thumbs down)."""
+            if self.agent is None or self._last_turn_result is None:
+                return
+            self.agent.record_feedback(accepted=False)
+            chat = self.query_one("#chat-log", RichLog)
+            chat.write("[dim]👎 Feedback recorded — response was not helpful[/dim]")
+            self._last_turn_result = None
 
         async def _spinner(self, chat: RichLog) -> None:
             frames = ["⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -289,7 +311,8 @@ if _TEXTUAL:
                 return
             try:
                 db = self.agent.db
-                _n = lambda q: db.execute(q)[0]["n"]
+                def _n(q):
+                    return db.execute(q)[0]["n"]
                 disp.update(
                     f"Memories:   [bold]{_n('SELECT COUNT(*) n FROM memories'):,}[/bold]\n"
                     f"Entities:   [bold]{_n('SELECT COUNT(*) n FROM entities'):,}[/bold]\n"

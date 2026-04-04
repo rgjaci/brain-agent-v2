@@ -36,14 +36,24 @@ import logging
 import math
 import re
 import time
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Dataclass
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Valid procedure tiers (per spec Technique 3)
+# ──────────────────────────────────────────────────────────────────────────────
+
+VALID_PROCEDURE_TIERS = {
+    1: "atomic",       # Low-level, specific actions
+    2: "task",         # Mid-level, reusable task procedures
+    3: "strategy",     # High-level, abstract strategy templates
+}
 
 
 @dataclass
@@ -59,12 +69,13 @@ class Procedure:
         steps:           Ordered list of action steps.
         warnings:        List of caveats / warnings.
         context:         Free-form contextual notes.
+        tier:            Procedure tier: 1=atomic, 2=task, 3=strategy.
         success_count:   Number of times this procedure was recorded as successful.
         attempt_count:   Total attempts (successes + failures + 1 to avoid log(0)).
         confidence:      Cached derived confidence in ``[0.0, 1.0]``.
     """
 
-    id: Optional[int]
+    id: int | None
     name: str
     description: str
     trigger_pattern: str
@@ -72,9 +83,15 @@ class Procedure:
     steps: list[str]
     warnings: list[str]
     context: str
+    tier: int = 2  # Default to task-level procedures
     success_count: int = 0
     attempt_count: int = 1
     confidence: float = 0.5
+
+    @property
+    def tier_name(self) -> str:
+        """Human-readable tier name."""
+        return VALID_PROCEDURE_TIERS.get(self.tier, "unknown")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -131,6 +148,7 @@ class ProcedureStore:
         failure_count = int(row.get("failure_count") or 0)
         attempt_count = success_count + failure_count + 1  # +1 avoids log(0)
         confidence = success_count / attempt_count if attempt_count > 1 else 0.5
+        tier = int(row.get("tier") or 2)  # Default to task-level
 
         return Procedure(
             id=row.get("id"),
@@ -141,6 +159,7 @@ class ProcedureStore:
             steps=_decode_json_list(row.get("steps")),
             warnings=_decode_json_list(row.get("warnings")),
             context=row.get("context") or "",
+            tier=tier,
             success_count=success_count,
             attempt_count=attempt_count,
             confidence=confidence,
@@ -178,7 +197,7 @@ class ProcedureStore:
         return success_rate + exploration
 
     @staticmethod
-    def _text_relevance(query: str, procedure: "Procedure") -> float:
+    def _text_relevance(query: str, procedure: Procedure) -> float:
         """Compute a simple keyword-overlap relevance score.
 
         Normalises both the query and the combined procedure text, then
@@ -249,7 +268,7 @@ class ProcedureStore:
         where_clause = " OR ".join(conditions)
         sql = f"""
             SELECT id, name, description, trigger_pattern,
-                   preconditions, steps, warnings, context,
+                   preconditions, steps, warnings, context, tier,
                    success_count, failure_count
               FROM procedures
              WHERE {where_clause}
@@ -258,7 +277,7 @@ class ProcedureStore:
 
         try:
             rows = self.db.execute(sql, params)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("ProcedureStore.find_relevant query failed: %s", exc)
             return []
 
@@ -286,6 +305,44 @@ class ProcedureStore:
         candidates.sort(key=lambda x: x[0], reverse=True)
         return [proc for _, proc in candidates[:max_results]]
 
+    def find_by_tier(
+        self, tier: int, max_results: int = 5
+    ) -> list[Procedure]:
+        """Find procedures by tier.
+
+        Tiers (per spec Technique 3):
+            1 = Atomic actions (low-level, specific)
+            2 = Task procedures (mid-level, reusable)
+            3 = Strategy templates (high-level, abstract)
+
+        Args:
+            tier:        Procedure tier (1, 2, or 3).
+            max_results: Maximum number of procedures to return.
+
+        Returns:
+            List of :class:`Procedure` objects ordered by confidence.
+        """
+        if tier not in VALID_PROCEDURE_TIERS:
+            logger.warning("Invalid procedure tier: %d", tier)
+            return []
+
+        sql = """
+            SELECT id, name, description, trigger_pattern,
+                   preconditions, steps, warnings, context, tier,
+                   success_count, failure_count
+              FROM procedures
+             WHERE tier = ?
+             ORDER BY success_count DESC
+             LIMIT ?
+        """
+        try:
+            rows = self.db.execute(sql, (tier, max_results))
+        except Exception as exc:
+            logger.warning("ProcedureStore.find_by_tier failed: %s", exc)
+            return []
+
+        return [self._row_to_procedure(row) for row in rows]
+
     def record_success(self, procedure_id: int) -> None:
         """Increment the success counter for a procedure.
 
@@ -305,7 +362,7 @@ class ProcedureStore:
                 (time.time(), procedure_id),
             )
             logger.debug("Recorded success for procedure id=%d", procedure_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("record_success failed for id=%d: %s", procedure_id, exc)
 
     def record_failure(self, procedure_id: int) -> None:
@@ -327,7 +384,7 @@ class ProcedureStore:
                 (time.time(), procedure_id),
             )
             logger.debug("Recorded failure for procedure id=%d", procedure_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("record_failure failed for id=%d: %s", procedure_id, exc)
 
     def store(self, procedure: Procedure) -> int:
@@ -402,7 +459,7 @@ class ProcedureStore:
             logger.debug("Stored procedure '%s' with id=%d", procedure.name, new_id)
             return new_id
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error("ProcedureStore.store failed: %s", exc)
             raise RuntimeError(f"Failed to store procedure '{procedure.name}': {exc}") from exc
 
@@ -428,7 +485,7 @@ class ProcedureStore:
                 """
             )
             return [self._row_to_procedure(r) for r in rows]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("ProcedureStore.get_all failed: %s", exc)
             return []
 

@@ -24,15 +24,15 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .database import MemoryDatabase
     from .kg import KnowledgeGraph
-    from ..config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +193,7 @@ class ReasoningEngine:
         self.on_event = on_event
 
         self._running: bool = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._cycle_count: int = 0
         self._strategy_index: int = 0
         self._focus_history: list[FocusTopic] = []
@@ -214,10 +214,8 @@ class ReasoningEngine:
         self._running = False
         if self._task and not self._task.done():
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
         logger.info("ReasoningEngine stopped after %d cycles.", self._cycle_count)
 
     @property
@@ -697,7 +695,5 @@ class ReasoningEngine:
     def _emit(self, event_type: str, data: dict) -> None:
         """Fire event to listeners (e.g. TUI)."""
         if self.on_event:
-            try:
+            with contextlib.suppress(Exception):
                 self.on_event(event_type, data)
-            except Exception:
-                pass

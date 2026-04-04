@@ -18,15 +18,16 @@ Implements :class:`MemoryReader`, which provides a full retrieval pipeline:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..llm.provider import OllamaProvider
     from ..llm.embeddings import GeminiEmbeddingProvider
+    from ..llm.provider import OllamaProvider
     from .database import MemoryDatabase
     from .kg import KnowledgeGraph
 
@@ -164,10 +165,10 @@ class MemoryReader:
 
     def __init__(
         self,
-        db: "MemoryDatabase",
-        embedder: "GeminiEmbeddingProvider",
-        kg: "KnowledgeGraph",
-        llm: Optional["OllamaProvider"] = None,
+        db: MemoryDatabase,
+        embedder: GeminiEmbeddingProvider,
+        kg: KnowledgeGraph,
+        llm: OllamaProvider | None = None,
     ) -> None:
         self.db = db
         self.embedder = embedder
@@ -238,7 +239,7 @@ class MemoryReader:
                     max_hops=2,
                     max_facts=20,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("KG traversal failed: %s", exc)
 
         # 7. Relevant procedures ───────────────────────────────────────────────
@@ -257,14 +258,14 @@ class MemoryReader:
                 }
                 for p in procs
             ]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("Procedure retrieval skipped: %s", exc)
 
         # 8. Update access counts ─────────────────────────────────────────────
         for mem in top_memories:
             try:
                 self.db.update_memory_access(mem.id)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.debug("Could not update access count for %d: %s", mem.id, exc)
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -303,7 +304,7 @@ class MemoryReader:
         * **normal** — everything else.
 
         The strategy is mapped to an *n* multiplier in :meth:`retrieve`:
-        conservative=0.5×, normal=1×, aggressive=1.5×.
+        conservative=0.5x, normal=1x, aggressive=1.5x.
 
         Args:
             query:   The user query text.
@@ -431,12 +432,12 @@ class MemoryReader:
 
         Multipliers applied (all multiplicative against ``rrf_score``):
 
-        * **Recency** × ``(1 + 0.3 × recency_factor)`` where ``recency_factor``
+        * **Recency** x ``(1 + 0.3 x recency_factor)`` where ``recency_factor``
           decays from 1.0 (fresh today) to 0.0 at 30 days.
-        * **Access frequency** × ``(1 + 0.1 × min(access_count, 10))``.
-        * **Category relevance** × 1.5 for procedures when query is a "how to",
-          × 1.2 for facts when query is a "who/what is" question.
-        * **Importance** × ``(0.5 + importance)`` (range: 0.5 – 1.5).
+        * **Access frequency** x ``(1 + 0.1 x min(access_count, 10))``.
+        * **Category relevance** x 1.5 for procedures when query is a "how to",
+          x 1.2 for facts when query is a "who/what is" question.
+        * **Importance** x ``(0.5 + importance)`` (range: 0.5 - 1.5).
 
         The modified ``rrf_score`` is written back into each object so that
         callers can inspect the final value.
@@ -633,7 +634,7 @@ class MemoryReader:
                 limit=k,
             )
             return hits
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Dense search failed: %s", exc)
             return []
 
@@ -661,7 +662,7 @@ class MemoryReader:
         try:
             hits: list[dict] = self.db.fts_search(safe_query, limit=k)
             return hits
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Sparse search failed for query %r: %s", safe_query, exc)
             return []
 
@@ -771,3 +772,169 @@ class MemoryReader:
                 parts.append("## Relevant Procedures\n" + "\n".join(proc_lines) + "\n")
 
         return "\n".join(parts).strip()
+
+    # ── Document hierarchical retrieval ──────────────────────────────────────
+
+    def retrieve_documents(
+        self, query: str, max_docs: int = 3, max_chunks_per_doc: int = 5
+    ) -> list[dict]:
+        """Two-stage document retrieval.
+
+        Stage 1: Find relevant documents via FTS5 search on document titles
+                 and summaries.
+        Stage 2: For each relevant document, retrieve the most relevant chunks
+                 via vector similarity (if available) or FTS5.
+
+        This hierarchical approach (doc → chunk) is more efficient than
+        searching all chunks flat, especially for large document collections.
+
+        Args:
+            query:                  User query text.
+            max_docs:               Maximum number of documents to retrieve.
+            max_chunks_per_doc:     Maximum chunks to retrieve per document.
+
+        Returns:
+            List of dicts with keys:
+                - doc_id: Document ID
+                - doc_title: Document title
+                - doc_summary: Document summary (if available)
+                - chunks: List of chunk dicts with content and metadata
+        """
+        if not query.strip():
+            return []
+
+        # Stage 1: Find relevant documents
+        try:
+            docs = self.db.execute(
+                """
+                SELECT id, title, summary, source_path, doc_type
+                  FROM documents
+                 WHERE title LIKE ? OR summary LIKE ? OR source_path LIKE ?
+                 ORDER BY created_at DESC
+                 LIMIT ?
+                """,
+                (f"%{query}%", f"%{query}%", f"%{query}%", max_docs),
+            )
+        except Exception as exc:
+            logger.warning("retrieve_documents: document search failed — %s", exc)
+            return []
+
+        if not docs:
+            return []
+
+        # Stage 2: For each document, retrieve relevant chunks
+        results: list[dict] = []
+        for doc in docs:
+            doc_id = doc["id"]
+            try:
+                # Try vector search first (if embedder available)
+                chunks = []
+                if self.embedder is not None:
+                    try:
+                        embedding = self.embedder.embed_query(query)
+                        vector_results = self.db.vector_search(
+                            embedding=embedding,
+                            table="memory_vectors",
+                            id_col="memory_id",
+                            limit=max_chunks_per_doc * 3,  # Get extra for filtering
+                        )
+                        # Filter to only chunks from this document
+                        for vr in vector_results:
+                            mem = self.db.get_memory(vr["id"])
+                            if mem and mem.get("source", "").startswith("document:"):
+                                # Check if this chunk belongs to our document
+                                metadata = mem.get("metadata", "{}")
+                                try:
+                                    meta = json.loads(metadata) if isinstance(metadata, str) else metadata
+                                    if meta.get("document_id") == doc_id:
+                                        chunks.append({
+                                            "content": mem.get("content", ""),
+                                            "chunk_index": meta.get("chunk_index", 0),
+                                            "score": vr.get("score", 0),
+                                        })
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                    except Exception:
+                        pass  # Fall back to FTS
+
+                # Fallback: FTS search for chunks
+                if not chunks:
+                    chunk_results = self.db.execute(
+                        """
+                        SELECT m.id, m.content, m.metadata
+                          FROM memories m
+                         WHERE m.source LIKE ?
+                           AND m.category = 'document_chunk'
+                         ORDER BY m.importance DESC
+                         LIMIT ?
+                        """,
+                        ("document:%", max_chunks_per_doc),
+                    )
+                    for cr in chunk_results:
+                        metadata = cr.get("metadata", "{}")
+                        try:
+                            meta = json.loads(metadata) if isinstance(metadata, str) else metadata
+                            if meta.get("document_id") == doc_id:
+                                chunks.append({
+                                    "content": cr.get("content", ""),
+                                    "chunk_index": meta.get("chunk_index", 0),
+                                    "score": 0,
+                                })
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+                # Sort chunks by chunk_index to maintain document order
+                chunks.sort(key=lambda c: c.get("chunk_index", 0))
+                chunks = chunks[:max_chunks_per_doc]
+
+                if chunks:
+                    results.append({
+                        "doc_id": doc_id,
+                        "doc_title": doc.get("title", ""),
+                        "doc_summary": doc.get("summary", ""),
+                        "source_path": doc.get("source_path", ""),
+                        "doc_type": doc.get("doc_type", ""),
+                        "chunks": chunks,
+                    })
+
+            except Exception as exc:
+                logger.warning(
+                    "retrieve_documents: chunk retrieval failed for doc %d — %s",
+                    doc_id, exc,
+                )
+
+        return results
+
+    def format_documents_for_context(self, docs: list[dict]) -> str:
+        """Format document retrieval results for LLM context injection.
+
+        Args:
+            docs: List of document dicts from :meth:`retrieve_documents`.
+
+        Returns:
+            Formatted string with document summaries and chunks.
+        """
+        if not docs:
+            return ""
+
+        parts: list[str] = ["## Relevant Documents"]
+
+        for doc in docs:
+            title = doc.get("doc_title", "Unknown")
+            summary = doc.get("doc_summary", "")
+            chunks = doc.get("chunks", [])
+
+            parts.append(f"\n### {title}")
+            if summary:
+                parts.append(f"Summary: {summary}")
+
+            if chunks:
+                parts.append("Relevant sections:")
+                for i, chunk in enumerate(chunks, 1):
+                    content = chunk.get("content", "")
+                    # Truncate very long chunks
+                    if len(content) > 500:
+                        content = content[:500] + "..."
+                    parts.append(f"  {i}. {content}")
+
+        return "\n".join(parts)

@@ -1,17 +1,20 @@
 """Quick sanity tests for ToolCallParser — no external services needed."""
-import sys
-sys.path.insert(0, '/mnt/user-data/workspace')
-# Also try the workspace root directly
 import os
+import sys
+
+sys.path.insert(0, '/mnt/user-data/workspace')
 os.chdir('/mnt/user-data/workspace')
+
 
 from brain_agent.core.llm.tool_parser import ToolCallParser
 
 parser = ToolCallParser()
 
-p_open  = lambda n: f'<param name="{n}">'
+def p_open(n):
+    return f'<param name="{n}">'
 p_close = '</param>'
-t_open  = lambda n: f'<tool name="{n}">'
+def t_open(n):
+    return f'<tool name="{n}">'
 t_close = '</tool>'
 
 # ---------- test 1: bash with Pydantic coercion ----------

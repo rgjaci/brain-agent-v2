@@ -10,12 +10,13 @@
 - agent.py: bootstrap with count_memories
 """
 from __future__ import annotations
+
 import os
 import time
-import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 from dataclasses import dataclass
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -119,8 +120,9 @@ def test_hierarchical_doc_search_empty(reader):
 
 def test_hierarchical_doc_search_with_docs(db, mock_embedder, kg):
     """Documents stored as memories with category='document' are found."""
-    from core.memory.reader import MemoryReader
     import json
+
+    from core.memory.reader import MemoryReader
 
     # Insert a document row
     db.execute(
@@ -131,7 +133,7 @@ def test_hierarchical_doc_search_with_docs(db, mock_embedder, kg):
     doc_id = doc_rows[0]["id"]
 
     # Insert a memory with category='document'
-    meta = json.dumps({"doc_id": doc_id})
+    json.dumps({"doc_id": doc_id})
     db.insert_memory("Python is great for data science", category="document",
                      metadata={"doc_id": doc_id})
 
@@ -294,10 +296,10 @@ def test_build_agent_graceful():
     """build_agent should not crash even without LLM/embedder."""
     import types
     args = types.SimpleNamespace(model="nonexistent", db=":memory:", debug=False)
-    agent, cfg = None, None
+    agent, _cfg = None, None
     try:
         from main import build_agent
-        agent, cfg = build_agent(args)
+        agent, _cfg = build_agent(args)
     except Exception:
         pass
     # If build succeeded, verify basics

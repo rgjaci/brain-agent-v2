@@ -1,6 +1,8 @@
 """Tests for context/compressor.py — HistoryCompressor."""
 from __future__ import annotations
+
 import pytest
+
 from core.context.compressor import HistoryCompressor
 
 

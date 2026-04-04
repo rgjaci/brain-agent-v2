@@ -16,8 +16,6 @@ TOKEN_BUDGET:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -91,11 +89,11 @@ class ContextAssembler:
     def assemble(
         self,
         procedure=None,
-        memories: Optional[list] = None,
+        memories: list | None = None,
         kg_context: str = "",
-        chat_history: Optional[list] = None,
+        chat_history: list | None = None,
         query: str = "",
-        budget: Optional[dict] = None,
+        budget: dict | None = None,
     ) -> list[dict]:
         """
         Assemble messages list for LLM call.
@@ -197,7 +195,6 @@ class ContextAssembler:
         if len(memories) <= 2:
             return memories
 
-        result = []
         top = []
         bottom = []
 

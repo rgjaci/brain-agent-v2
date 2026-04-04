@@ -1,0 +1,82 @@
+# Brain Agent v2 — Sample Configuration
+#
+# Copy this file to ~/.brain_agent/config.yaml and customize.
+# All settings have sensible defaults — only override what you need.
+#
+# Environment variables take precedence over this file:
+#   GEMINI_API_KEY, BRAIN_AGENT_MODEL, BRAIN_AGENT_DB, BRAIN_AGENT_DEBUG,
+#   OLLAMA_BASE_URL
+
+# ── LLM Settings ─────────────────────────────────────────────────────────────
+model: "qwen3.5:4b"
+ollama_base_url: "http://localhost:11434"
+temperature: 0.3
+max_tokens: 2000
+
+# ── Multi-model support ──────────────────────────────────────────────────────
+# Use different models for different tasks. Leave empty to use `model` for all.
+# extraction_model: "qwen3.5:1.5b"  # Small, fast model for fact extraction
+# reasoning_model: "qwen3.5:8b"     # Larger model for complex reasoning
+# chat_model: ""                    # Default model for conversation
+
+# ── Embeddings ───────────────────────────────────────────────────────────────
+# GEMINI_API_KEY environment variable is recommended over hardcoding here.
+embedding_model: "models/gemini-embedding-001"
+embedding_dims: 768
+
+# ── Database & Workspace ─────────────────────────────────────────────────────
+db_path: "~/.brain_agent/memory.db"
+workspace_path: "~/.brain_agent/workspace"
+
+# ── Retrieval ────────────────────────────────────────────────────────────────
+retrieval_top_k: 5
+token_budget_total: 32768
+
+# ── Permissions ──────────────────────────────────────────────────────────────
+permissions:
+  read_allowed:
+    - "~/.brain_agent/**"
+    - "${CWD}/**"
+    - "~/projects/**"
+  read_blocked:
+    - "~/.ssh/id_*"
+    - "~/.aws/**"
+    - "**/.env"
+  write_allowed:
+    - "~/.brain_agent/workspace/**"
+    - "${CWD}/**"
+  write_blocked:
+    - "~/.bashrc"
+    - "~/.zshrc"
+    - "~/.brain_agent/config.yaml"
+  bash_blocked_patterns:
+    - "rm -rf /"
+    - "sudo rm"
+    - "chmod 777"
+    - "> /dev/sd"
+  bash_timeout_default: 30
+  bash_timeout_max: 300
+  network_allowed:
+    - "generativelanguage.googleapis.com"
+    - "api.duckduckgo.com"
+    - "html.duckduckgo.com"
+  network_default: "prompt_user"
+
+# ── AutoDream ────────────────────────────────────────────────────────────────
+dream_enabled: true
+dream_interval_turns: 50
+dream_idle_threshold: 600
+
+# ── System 2 Reasoning ──────────────────────────────────────────────────────
+reasoning_enabled: true
+reasoning_interval: 180          # seconds between cycles
+reasoning_max_cycles_per_session: 100
+
+# ── MCP Server ───────────────────────────────────────────────────────────────
+mcp_transport: "stdio"
+mcp_host: "localhost"
+mcp_port: 8765
+
+# ── Debug ────────────────────────────────────────────────────────────────────
+debug_mode: false
+# debug_file: "~/.brain_agent/debug.log"

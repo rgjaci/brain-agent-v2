@@ -22,7 +22,6 @@ Key features:
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -30,11 +29,10 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .database import MemoryDatabase
-    from .writer import MemoryWriter
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +115,7 @@ class DocumentIngester:
                 )
                 """
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("_ensure_config_table: %s", exc)
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -216,7 +214,7 @@ class DocumentIngester:
             try:
                 await self.writer.process_document_chunk(chunk, session_id)
                 facts_written += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "ingest_file: failed to write chunk %d/%d of %s — %s.",
                     chunk.chunk_index + 1, chunk.total_chunks, path, exc,
@@ -399,7 +397,7 @@ class DocumentIngester:
             # Split oversized chunks
             if len(chunk_text) > MAX_CHUNK_SIZE:
                 sub_chunks = self._split_by_size(chunk_text)
-                for i, sub in enumerate(sub_chunks):
+                for _i, sub in enumerate(sub_chunks):
                     processed.append(sub)
                 prev_tail = chunk_text[-CHUNK_OVERLAP:] if len(chunk_text) > CHUNK_OVERLAP else ""
             else:
@@ -529,7 +527,7 @@ class DocumentIngester:
                 (f"{_HASH_KEY_PREFIX}{file_hash}",),
             )
             return len(rows) > 0
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.debug("is_already_ingested: config query failed — %s", exc)
             return False
 
@@ -548,7 +546,7 @@ class DocumentIngester:
                 "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
                 (f"{_HASH_KEY_PREFIX}{file_hash}", json.dumps({"path": path})),
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "mark_ingested: could not write hash for %s — %s.", path, exc
             )

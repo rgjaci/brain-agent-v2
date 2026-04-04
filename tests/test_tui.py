@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 try:
-    from textual.app import App as _  # check textual installed
+    import textual.app  # check textual installed
     _TEXTUAL = True
 except ImportError:
     _TEXTUAL = False
@@ -24,9 +23,9 @@ class FakeTurnResult:
     response: str = "mock response"
     tool_calls: list = field(default_factory=list)
     memories_used: int = 3
-    procedure_used: Optional[str] = None
+    procedure_used: str | None = None
     tokens_used: int = 100
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @pytest.fixture
@@ -53,7 +52,7 @@ async def test_app_mounts_no_agent():
     """App should mount successfully even without an agent (demo mode)."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=None, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         # Should show ready message
         chat_log = app.query_one("#chat-log")
         assert chat_log is not None
@@ -64,7 +63,7 @@ async def test_app_mounts_with_agent(mock_agent):
     """App should mount and wire agent event hook."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         chat_log = app.query_one("#chat-log")
         assert chat_log is not None
 
@@ -76,7 +75,7 @@ async def test_send_empty_ignored(mock_agent):
     """Empty input should not trigger agent.process()."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         await app.action_send_message()
         mock_agent.process.assert_not_called()
 
@@ -84,10 +83,11 @@ async def test_send_empty_ignored(mock_agent):
 @pytest.mark.asyncio
 async def test_send_message_calls_agent(mock_agent):
     """Typing text and sending should call agent.process() with the text."""
-    from tui.app import BrainAgentApp
     from textual.widgets import TextArea
+
+    from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         textarea = app.query_one("#user-input", TextArea)
         textarea.text = "hello world"
         await app.action_send_message()
@@ -99,10 +99,11 @@ async def test_send_message_calls_agent(mock_agent):
 @pytest.mark.asyncio
 async def test_send_clears_textarea(mock_agent):
     """After sending, the textarea should be cleared."""
-    from tui.app import BrainAgentApp
     from textual.widgets import TextArea
+
+    from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         textarea = app.query_one("#user-input", TextArea)
         textarea.text = "test input"
         await app.action_send_message()
@@ -116,10 +117,11 @@ async def test_send_with_tool_calls(mock_agent):
         response="done",
         tool_calls=[{"name": "bash"}, {"name": "read_file"}],
     ))
-    from tui.app import BrainAgentApp
     from textual.widgets import TextArea
+
+    from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         textarea = app.query_one("#user-input", TextArea)
         textarea.text = "run ls"
         await app.action_send_message()
@@ -132,10 +134,11 @@ async def test_send_with_tool_calls(mock_agent):
 @pytest.mark.asyncio
 async def test_send_no_agent_demo_mode():
     """With no agent, sending a message should show demo mode text."""
-    from tui.app import BrainAgentApp
     from textual.widgets import TextArea
+
+    from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=None, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         textarea = app.query_one("#user-input", TextArea)
         textarea.text = "hello"
         await app.action_send_message()
@@ -149,10 +152,11 @@ async def test_send_no_agent_demo_mode():
 async def test_agent_process_error(mock_agent):
     """If agent.process() raises, error should be displayed, not crash."""
     mock_agent.process = AsyncMock(side_effect=RuntimeError("LLM timeout"))
-    from tui.app import BrainAgentApp
     from textual.widgets import TextArea
+
+    from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         textarea = app.query_one("#user-input", TextArea)
         textarea.text = "test"
         await app.action_send_message()
@@ -167,7 +171,7 @@ async def test_clear_chat(mock_agent):
     """Ctrl+L should clear the chat log and start a new session."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app.action_clear_chat()
         mock_agent.new_session.assert_called_once()
 
@@ -179,7 +183,7 @@ async def test_toggle_debug(mock_agent):
     """Toggle debug should hide/show the debug panel."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         panel = app.query_one("#debug-panel")
         assert app._debug_shown is True
         app.action_toggle_debug()
@@ -197,7 +201,7 @@ async def test_bootstrap(mock_agent):
     """Bootstrap action should call agent.bootstrap()."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         await app.action_bootstrap()
         mock_agent.bootstrap.assert_called_once()
 
@@ -209,7 +213,7 @@ async def test_agent_event_retrieval(mock_agent):
     """Retrieval events should render in the debug panel."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._on_agent_event("retrieval", {
             "strategy": "aggressive",
             "memories": 5,
@@ -223,7 +227,7 @@ async def test_agent_event_llm_done(mock_agent):
     """LLM done events should update the token display."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._on_agent_event("llm_done", {
             "tokens": 1500,
             "elapsed_ms": 420,
@@ -235,7 +239,7 @@ async def test_agent_event_write_done(mock_agent):
     """Write done events should show extraction stats."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._on_agent_event("write_done", {
             "facts": 3,
             "entities": 1,
@@ -248,7 +252,7 @@ async def test_agent_event_tool_call(mock_agent):
     """Tool call events should show tool name."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._on_agent_event("tool_call", {"name": "bash"})
         app._on_agent_event("tool_result", {"result": "file.txt"})
 
@@ -258,7 +262,7 @@ async def test_agent_event_procedure_match(mock_agent):
     """Procedure match events should show name and confidence."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._on_agent_event("procedure_match", {
             "name": "deploy_docker",
             "confidence": 0.85,
@@ -270,7 +274,7 @@ async def test_agent_event_consolidation(mock_agent):
     """Consolidation events should show merge count."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._on_agent_event("consolidation", {"merged": 3})
 
 
@@ -281,7 +285,7 @@ async def test_refresh_stats(mock_agent):
     """Stats panel should display memory/entity/relation counts."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._refresh_stats()
         # Should not crash and stats-display should be updated
 
@@ -291,7 +295,7 @@ async def test_refresh_stats_no_agent():
     """Stats refresh with no agent should show fallback message."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=None, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._refresh_stats()
 
 
@@ -302,7 +306,7 @@ async def test_token_display_update(mock_agent):
     """Token display should handle various usage data."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._update_token_display({
             "total": 16000,
             "system": 500,
@@ -317,7 +321,7 @@ async def test_token_display_empty(mock_agent):
     """Token display should handle empty usage data."""
     from tui.app import BrainAgentApp
     app = BrainAgentApp(agent=mock_agent, config=None)
-    async with app.run_test() as pilot:
+    async with app.run_test():
         app._update_token_display({})
 
 

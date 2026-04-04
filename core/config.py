@@ -5,10 +5,10 @@ Loads agent configuration from YAML with environment variable overrides.
 from __future__ import annotations
 
 import os
-import yaml
-from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
+
+import yaml
 
 DEFAULT_DB_PATH = Path.home() / ".brain_agent" / "memory.db"
 DEFAULT_CONFIG_PATH = Path.home() / ".brain_agent" / "config.yaml"
@@ -80,6 +80,12 @@ class AgentConfig:
     temperature: float = 0.3
     max_tokens: int = 2000
 
+    # ── Multi-model support ──────────────────────────────────────────────────
+    # Use different models for different tasks. When empty, falls back to `model`.
+    extraction_model: str = ""  # Small, fast model for fact/entity extraction
+    reasoning_model: str = ""   # Larger model for complex reasoning tasks
+    chat_model: str = ""        # Default model for conversation (falls back to `model`)
+
     # ── Embeddings ────────────────────────────────────────────────────────────
     gemini_api_key: str = ""
     embedding_model: str = "models/gemini-embedding-001"
@@ -113,12 +119,12 @@ class AgentConfig:
 
     # ── Debug ─────────────────────────────────────────────────────────────────
     debug_mode: bool = False
-    debug_file: Optional[Path] = None
+    debug_file: Path | None = None
 
     # ─────────────────────────────────────────────────────────────────────────
 
     @classmethod
-    def load(cls, path: Path = DEFAULT_CONFIG_PATH) -> "AgentConfig":
+    def load(cls, path: Path = DEFAULT_CONFIG_PATH) -> AgentConfig:
         """Load config from YAML file, with environment variable overrides.
 
         Args:
@@ -191,6 +197,26 @@ class AgentConfig:
         self.workspace_path.mkdir(parents=True, exist_ok=True)
         if self.debug_file is not None:
             self.debug_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── Multi-model helpers ──────────────────────────────────────────────────
+
+    def get_model_for_task(self, task: str) -> str:
+        """Get the model name for a specific task.
+
+        Args:
+            task: One of 'chat', 'extraction', 'reasoning'.
+
+        Returns:
+            Model name to use for the task. Falls back to the default
+            ``model`` if no task-specific model is configured.
+        """
+        if task == "extraction" and self.extraction_model:
+            return self.extraction_model
+        if task == "reasoning" and self.reasoning_model:
+            return self.reasoning_model
+        if task == "chat" and self.chat_model:
+            return self.chat_model
+        return self.model
 
     def is_valid(self) -> tuple[bool, list[str]]:
         """Validate config for minimum required settings.

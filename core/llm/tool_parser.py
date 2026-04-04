@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Any, Optional, Type
+from dataclasses import dataclass
+from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class IngestParams(BaseModel):
 # Tool-name → param model registry
 # ---------------------------------------------------------------------------
 
-_TOOL_REGISTRY: dict[str, Type[BaseModel]] = {
+_TOOL_REGISTRY: dict[str, type[BaseModel]] = {
     "bash": BashParams,
     "read_file": ReadFileParams,
     "write_file": WriteFileParams,

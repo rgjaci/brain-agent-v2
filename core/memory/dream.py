@@ -24,16 +24,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import struct
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .database import MemoryDatabase
-    from .consolidation import ConsolidationEngine
-    from .kg import KnowledgeGraph
     from ..llm.provider import OllamaProvider
+    from .consolidation import ConsolidationEngine
+    from .database import MemoryDatabase
+    from .kg import KnowledgeGraph
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +129,7 @@ class DreamReport:
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if len(a) != len(b) or not a:
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
     if na == 0.0 or nb == 0.0:
@@ -173,7 +172,7 @@ class DreamEngine:
         turn_count: int,
         interval: int = DREAM_INTERVAL_TURNS,
         idle_threshold: int = DREAM_IDLE_THRESHOLD,
-    ) -> Optional[DreamReport]:
+    ) -> DreamReport | None:
         """Auto-trigger a dream cycle based on turn count or idle time.
 
         Args:
@@ -388,7 +387,7 @@ class DreamEngine:
         candidates = candidates[:max_pairs]
 
         resolved = 0
-        for id_a, id_b, sim in candidates:
+        for id_a, id_b, _sim in candidates:
             mem_a = self.db.get_memory(id_a)
             mem_b = self.db.get_memory(id_b)
             if not mem_a or not mem_b:

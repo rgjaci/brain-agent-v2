@@ -12,8 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +51,7 @@ class BashResult:
 class BashTool:
     """Execute shell commands with safety checks and timeouts."""
 
-    def __init__(self, permissions: Optional[dict] = None):
+    def __init__(self, permissions: dict | None = None):
         self.permissions = permissions or {}
         self.timeout_default = int(
             self.permissions.get("bash_timeout_default", DEFAULT_TIMEOUT)
@@ -67,8 +66,8 @@ class BashTool:
     async def execute(
         self,
         command: str,
-        timeout: Optional[int] = None,
-        workdir: Optional[str] = None,
+        timeout: int | None = None,
+        workdir: str | None = None,
     ) -> BashResult:
         """Execute a shell command safely."""
         if not command or not command.strip():
@@ -109,7 +108,7 @@ class BashTool:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 try:
                     proc.kill()
                     await proc.wait()
@@ -128,10 +127,7 @@ class BashTool:
             exit_code = proc.returncode or 0
 
             # Combine output
-            if stderr.strip():
-                combined = stdout + "\n--- STDERR ---\n" + stderr
-            else:
-                combined = stdout
+            combined = stdout + "\n--- STDERR ---\n" + stderr if stderr.strip() else stdout
 
             return BashResult(
                 success=(exit_code == 0),

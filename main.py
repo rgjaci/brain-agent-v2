@@ -24,14 +24,13 @@ def build_agent(args=None):
 
     Gracefully degrades when LLM or embedder are unavailable.
     """
-    from core.config import AgentConfig
-    from core.memory.database import MemoryDatabase
-    from core.memory.kg import KnowledgeGraph
-    from core.memory.feedback import RetrievalFeedbackCollector
-    from core.memory.consolidation import ConsolidationEngine
-    from core.context.assembler import ContextAssembler
-    from core.context.compressor import HistoryCompressor
     from core.agent import BrainAgent
+    from core.config import AgentConfig
+    from core.context.assembler import ContextAssembler
+    from core.memory.consolidation import ConsolidationEngine
+    from core.memory.database import MemoryDatabase
+    from core.memory.feedback import RetrievalFeedbackCollector
+    from core.memory.kg import KnowledgeGraph
 
     cfg = AgentConfig.load()
     if hasattr(args, "model") and getattr(args, "model", None):
@@ -139,27 +138,95 @@ def build_agent(args=None):
 
 
 async def _print_stats(agent) -> None:
+    """Print comprehensive memory statistics."""
     try:
         db = agent.db
         def _n(q): return db.execute(q)[0]["n"]
-        print(
-            f"  memories   = {_n('SELECT COUNT(*) n FROM memories'):,}\n"
-            f"  entities   = {_n('SELECT COUNT(*) n FROM entities'):,}\n"
-            f"  relations  = {_n('SELECT COUNT(*) n FROM relations'):,}\n"
-            f"  procedures = {_n('SELECT COUNT(*) n FROM procedures'):,}"
+        def _sum(q):
+            r = db.execute(q)
+            return r[0]["total"] if r and r[0]["total"] else 0
+
+        print("\n" + "=" * 50)
+        print("  Brain Agent — Memory Statistics")
+        print("=" * 50)
+
+        # Core counts
+        print("\n  Core:")
+        print(f"    memories   = {_n('SELECT COUNT(*) n FROM memories'):,}")
+        print(f"    entities   = {_n('SELECT COUNT(*) n FROM entities'):,}")
+        print(f"    relations  = {_n('SELECT COUNT(*) n FROM relations'):,}")
+        print(f"    procedures = {_n('SELECT COUNT(*) n FROM procedures'):,}")
+        print(f"    documents  = {_n('SELECT COUNT(*) n FROM documents'):,}")
+
+        # Memory breakdown by category
+        print("\n  Memories by category:")
+        cats = db.execute(
+            "SELECT category, COUNT(*) n FROM memories GROUP BY category ORDER BY n DESC"
         )
+        for cat in cats:
+            print(f"    {cat['category']:20s} = {cat['n']:,}")
+
+        # Memory age distribution
+        print("\n  Memory age distribution:")
+        ages = db.execute(
+            """
+            SELECT
+                CASE
+                    WHEN created_at > strftime('%s','now') - 86400 THEN 'Last 24h'
+                    WHEN created_at > strftime('%s','now') - 604800 THEN 'Last 7 days'
+                    WHEN created_at > strftime('%s','now') - 2592000 THEN 'Last 30 days'
+                    ELSE 'Older'
+                END as age_group,
+                COUNT(*) n
+            FROM memories
+            GROUP BY age_group
+            ORDER BY age_group
+            """
+        )
+        for age in ages:
+            print(f"    {age['age_group']:20s} = {age['n']:,}")
+
+        # Access patterns
+        print("\n  Access patterns:")
+        print(f"    Total accesses    = {_sum('SELECT SUM(access_count) total FROM memories'):,}")
+        print(f"    Avg accesses/mem  = {_sum('SELECT AVG(access_count) total FROM memories'):.1f}")
+        print(f"    Most accessed     = {_n('SELECT MAX(access_count) n FROM memories'):,}")
+
+        # Procedure stats
+        print("\n  Procedures:")
+        procs = db.execute(
+            "SELECT success_count, failure_count FROM procedures"
+        )
+        total_success = sum(p["success_count"] for p in procs)
+        total_failure = sum(p["failure_count"] for p in procs)
+        total_attempts = total_success + total_failure
+        success_rate = (total_success / total_attempts * 100) if total_attempts > 0 else 0
+        print(f"    Total successes   = {total_success:,}")
+        print(f"    Total failures    = {total_failure:,}")
+        print(f"    Success rate      = {success_rate:.1f}%")
+
+        # Database size
+        import os
+        db_path = getattr(db, 'db_path', None)
+        if db_path and os.path.exists(db_path):
+            size_mb = os.path.getsize(db_path) / (1024 * 1024)
+            print(f"\n  Database size: {size_mb:.1f} MB")
+
+        print()
     except Exception as exc:
         print(f"  (stats unavailable: {exc})")
 
 
 async def cmd_chat(agent, args) -> None:
     print("Brain Agent  |  ctrl+c or /quit to exit")
-    print("Commands:  /stats  /clear  /bootstrap  /quit")
+    print("Commands:  /stats  /clear  /bootstrap  /good  /bad  /quit")
+    print("Feedback:  /good (thumbs up)  /bad (thumbs down)")
     while True:
         try:
             line = input("\nYou: ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nBye."); break
+            print("\nBye.")
+            break
         if not line:
             continue
         if line == "/quit":
@@ -176,6 +243,14 @@ async def cmd_chat(agent, args) -> None:
             await agent.bootstrap()
             print("Done.")
             continue
+        if line == "/good":
+            agent.record_feedback(accepted=True)
+            print("👍 Feedback recorded — response was helpful")
+            continue
+        if line == "/bad":
+            agent.record_feedback(accepted=False)
+            print("👎 Feedback recorded — response was not helpful")
+            continue
         try:
             result = await agent.process(line)
             print(f"\nAgent: {result.response}")
@@ -187,7 +262,8 @@ async def cmd_chat(agent, args) -> None:
         except Exception as exc:
             print(f"  [ERROR] {exc}")
             if getattr(args, "debug", False):
-                import traceback; traceback.print_exc()
+                import traceback
+                traceback.print_exc()
 
 
 async def cmd_run(agent, cfg, args) -> None:
@@ -233,23 +309,109 @@ async def cmd_teach(agent, args) -> None:
 
 
 async def cmd_recall(agent, args) -> None:
-    """Search memories by query."""
+    """Search memories by query with optional filtering and export."""
     query = args.query
     if not query:
         print("Error: empty query")
         return
+
+    category = getattr(args, "category", None)
+    limit = getattr(args, "limit", 10)
+    offset = getattr(args, "offset", 0)
+    verbose = getattr(args, "verbose", False)
+    export = getattr(args, "export", None)
+
+    import json
     import re
     safe = re.sub(r'[^\w\s]', ' ', query).strip()
-    # Use OR so any matching term returns results
     fts_query = " OR ".join(safe.split()) if safe else ""
-    results = agent.db.fts_search(fts_query, limit=10) if fts_query else []
+
+    # Build query with optional category filter
+    if category:
+        results = agent.db.execute(
+            """
+            SELECT id, content, category, source, importance, confidence,
+                   access_count, created_at, last_accessed, usefulness_score
+              FROM memories
+             WHERE category = ?
+             ORDER BY importance DESC, created_at DESC
+             LIMIT ? OFFSET ?
+            """,
+            (category, limit, offset),
+        )
+    elif fts_query:
+        # FTS search with category filter
+        raw_results = agent.db.fts_search(fts_query, limit=limit + offset)
+        results = []
+        for i, hit in enumerate(raw_results):
+            if i < offset:
+                continue
+            mem = agent.db.get_memory(hit["id"])
+            if mem:
+                results.append(mem)
+    else:
+        results = agent.db.execute(
+            """
+            SELECT id, content, category, source, importance, confidence,
+                   access_count, created_at, last_accessed, usefulness_score
+              FROM memories
+             ORDER BY importance DESC, created_at DESC
+             LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+
     if not results:
         print(f'No memories found for: "{query}"')
         return
-    for i, hit in enumerate(results, 1):
-        mem = agent.db.get_memory(hit["id"])
-        if mem:
-            print(f"  {i}. [{mem.get('category', '?')}] {mem.get('content', '')}")
+
+    if export:
+        # Export as JSON
+        export_data = []
+        for mem in results:
+            export_data.append({
+                "id": mem.get("id"),
+                "content": mem.get("content", ""),
+                "category": mem.get("category", ""),
+                "source": mem.get("source", ""),
+                "importance": mem.get("importance", 0),
+                "confidence": mem.get("confidence", 0),
+                "access_count": mem.get("access_count", 0),
+                "created_at": mem.get("created_at", 0),
+            })
+        with open(export, "w") as f:
+            json.dump(export_data, f, indent=2)
+        print(f"Exported {len(export_data)} memories to {export}")
+        return
+
+    # Display results
+    if verbose:
+        print(f'\nMemory search results for "{query}" ({len(results)} shown, offset={offset}):')
+        print("-" * 80)
+        for i, mem in enumerate(results, offset + 1):
+            content = mem.get("content", "")
+            category = mem.get("category", "?")
+            importance = mem.get("importance", 0)
+            confidence = mem.get("confidence", 0)
+            access_count = mem.get("access_count", 0)
+            source = mem.get("source", "")
+            created = mem.get("created_at", 0)
+            print(f"\n{i}. [{category}] (importance={importance:.2f}, "
+                  f"confidence={confidence:.2f}, accessed={access_count}x)")
+            print(f"   Source: {source}")
+            print(f"   Content: {content}")
+            if created:
+                from datetime import datetime
+                print(f"   Created: {datetime.fromtimestamp(created).isoformat()}")
+    else:
+        print(f'\nMemory search results for "{query}":')
+        for i, mem in enumerate(results, offset + 1):
+            content = mem.get("content", "")
+            category = mem.get("category", "?")
+            print(f"  {i}. [{category}] {content}")
+
+        if len(results) >= limit:
+            print(f"\n  (showing {limit} of many — use --offset {offset + limit} for more)")
 
 
 async def cmd_dream(agent, args) -> None:
@@ -308,6 +470,11 @@ def make_parser() -> argparse.ArgumentParser:
 
     recall_p = sub.add_parser("recall", help="Search memories")
     recall_p.add_argument("query", help="Search query")
+    recall_p.add_argument("--category", "-c", help="Filter by category (fact, preference, etc.)")
+    recall_p.add_argument("--limit", "-n", type=int, default=10, help="Max results (default: 10)")
+    recall_p.add_argument("--offset", "-o", type=int, default=0, help="Skip N results")
+    recall_p.add_argument("--verbose", "-v", action="store_true", help="Show full details")
+    recall_p.add_argument("--export", "-e", help="Export results to JSON file")
 
     sub.add_parser("dream", help="Trigger AutoDream (LLM-powered memory consolidation)")
 

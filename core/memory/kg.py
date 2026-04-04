@@ -13,11 +13,10 @@ Schema notes (from database.py):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-import math
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +68,7 @@ class Entity:
     properties: dict = field(default_factory=dict)
     importance: float = 0.5
     source: str = ""
-    id: Optional[int] = None
+    id: int | None = None
 
 
 @dataclass
@@ -132,7 +131,7 @@ class KnowledgeGraph:
             source=entity.source or "inferred",
         )
 
-    def upsert_relation(self, relation: Relation) -> Optional[int]:
+    def upsert_relation(self, relation: Relation) -> int | None:
         """Insert or update a directed relation between two named entities.
 
         Entity names are resolved to IDs via the database.  If either entity
@@ -179,7 +178,7 @@ class KnowledgeGraph:
 
     # ── Lookup helpers ─────────────────────────────────────────────────────────
 
-    def find_entity(self, name: str) -> Optional[dict]:
+    def find_entity(self, name: str) -> dict | None:
         """Find an entity by exact name (case-sensitive, delegated to DB).
 
         Args:
@@ -286,10 +285,8 @@ class KnowledgeGraph:
                         if isinstance(raw_props, dict):
                             props = raw_props
                         else:
-                            try:
+                            with contextlib.suppress(json.JSONDecodeError, TypeError):
                                 props = json.loads(raw_props)
-                            except (json.JSONDecodeError, TypeError):
-                                pass
                     if props.get("detail"):
                         fact += f" — {props['detail']}"
 

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "brain-agent": {
+      "command": "/home/qw/brain-agent-v2/.venv/bin/python",
+      "args": ["-m", "server.mcp_server"],
+      "cwd": "/home/qw/brain-agent-v2"
+    }
+  }
+}

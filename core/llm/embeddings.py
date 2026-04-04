@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
-import time
+import random
+import sqlite3
 import threading
+import time
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -17,29 +19,89 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingCache:
-    """Thread-safe in-memory LRU-style cache for embeddings.
+    """Thread-safe in-memory LRU-style cache for embeddings with optional
+    on-disk persistence via SQLite.
 
     Items are keyed by the SHA-256 of the input text, so identical strings
     across sessions always produce cache hits without collision risk.
 
     Args:
-        cache_dir:        Optional ``Path`` for future on-disk persistence
-                          (directory is created if it does not exist).
+        cache_dir:        Optional ``Path`` for on-disk persistence.
+                          A SQLite database ``embeddings.db`` is created here.
         max_memory_items: Maximum number of embeddings held in RAM before the
                           oldest 20 % are evicted.
     """
 
     def __init__(
         self,
-        cache_dir: Optional[Path] = None,
+        cache_dir: Path | None = None,
         max_memory_items: int = 10_000,
     ) -> None:
         self._memory: dict[str, list[float]] = {}
         self._max_items = max_memory_items
         self._lock = threading.Lock()
         self._cache_dir = cache_dir
+        self._disk_db: sqlite3.Connection | None = None
+
         if cache_dir:
             cache_dir.mkdir(parents=True, exist_ok=True)
+            self._init_disk_cache()
+
+    # ------------------------------------------------------------------
+    # Disk cache helpers
+    # ------------------------------------------------------------------
+
+    def _init_disk_cache(self) -> None:
+        """Initialize the SQLite disk cache."""
+        if self._cache_dir is None:
+            return
+        db_path = self._cache_dir / "embeddings.db"
+        try:
+            self._disk_db = sqlite3.connect(str(db_path))
+            self._disk_db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS embeddings (
+                    key TEXT PRIMARY KEY,
+                    embedding TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            self._disk_db.commit()
+            logger.debug("Disk embedding cache initialized at %s", db_path)
+        except Exception as exc:
+            logger.warning("Failed to initialize disk cache: %s", exc)
+            self._disk_db = None
+
+    def _get_from_disk(self, key: str) -> list[float] | None:
+        """Retrieve an embedding from the disk cache."""
+        if self._disk_db is None:
+            return None
+        try:
+            row = self._disk_db.execute(
+                "SELECT embedding FROM embeddings WHERE key = ?", (key,)
+            ).fetchone()
+            if row:
+                return json.loads(row[0])
+        except Exception as exc:
+            logger.debug("Disk cache read failed: %s", exc)
+        return None
+
+    def _set_on_disk(self, key: str, embedding: list[float]) -> None:
+        """Store an embedding in the disk cache."""
+        if self._disk_db is None:
+            return
+        try:
+            self._disk_db.execute(
+                """
+                INSERT OR REPLACE INTO embeddings (key, embedding, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (key, json.dumps(embedding), time.time()),
+            )
+            self._disk_db.commit()
+        except Exception as exc:
+            logger.debug("Disk cache write failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -53,14 +115,32 @@ class EmbeddingCache:
     # Public API
     # ------------------------------------------------------------------
 
-    def get(self, text: str) -> Optional[list[float]]:
-        """Return cached embedding for *text*, or ``None`` on a cache miss."""
+    def get(self, text: str) -> list[float] | None:
+        """Return cached embedding for *text*, or ``None`` on a cache miss.
+
+        Checks the in-memory cache first, then falls back to the disk cache.
+        """
         key = self._key(text)
         with self._lock:
-            return self._memory.get(key)
+            result = self._memory.get(key)
+            if result is not None:
+                return result
+
+        # Fall back to disk cache (outside lock to avoid blocking)
+        disk_result = self._get_from_disk(key)
+        if disk_result is not None:
+            # Promote to memory cache
+            with self._lock:
+                self._memory[key] = disk_result
+            return disk_result
+
+        return None
 
     def set(self, text: str, embedding: list[float]) -> None:
-        """Store *embedding* for *text*, evicting old entries when full."""
+        """Store *embedding* for *text*, evicting old entries when full.
+
+        Writes to both in-memory and disk caches.
+        """
         key = self._key(text)
         with self._lock:
             if len(self._memory) >= self._max_items:
@@ -71,14 +151,28 @@ class EmbeddingCache:
                     del self._memory[k]
             self._memory[key] = embedding
 
+        # Also write to disk
+        self._set_on_disk(key, embedding)
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._memory)
 
     def clear(self) -> None:
-        """Flush all cached embeddings from memory."""
+        """Flush all cached embeddings from memory and disk."""
         with self._lock:
             self._memory.clear()
+        if self._disk_db is not None:
+            try:
+                self._disk_db.execute("DELETE FROM embeddings")
+                self._disk_db.commit()
+            except Exception as exc:
+                logger.debug("Disk cache clear failed: %s", exc)
+
+    @property
+    def has_disk_cache(self) -> bool:
+        """Whether a persistent disk cache is configured and available."""
+        return self._disk_db is not None
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +209,7 @@ class GeminiEmbeddingProvider:
     def __init__(
         self,
         api_key: str,
-        cache_dir: Optional[Path] = None,
+        cache_dir: Path | None = None,
         model: str = MODEL,
         dims: int = DIMS,
     ) -> None:
@@ -139,7 +233,7 @@ class GeminiEmbeddingProvider:
             raise ImportError(
                 "google-genai package required. "
                 "Install with: pip install google-genai"
-            )
+            ) from None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -156,6 +250,8 @@ class GeminiEmbeddingProvider:
     def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Send a single batched embedding request to Gemini.
 
+        Retries up to 3 times with exponential backoff on transient errors.
+
         Args:
             texts: List of strings (max ``BATCH_SIZE`` items).
 
@@ -163,23 +259,36 @@ class GeminiEmbeddingProvider:
             List of embedding vectors in the same order as *texts*.
 
         Raises:
-            Exception: Re-raises any API-level errors after logging.
+            Exception: Re-raises any API-level errors after retries exhausted.
         """
         self._rate_limit()
-        try:
-            from google.genai import types as genai_types
+        last_exc: Exception | None = None
 
-            result = self._client.models.embed_content(
-                model=self.model,
-                contents=texts,
-                config=genai_types.EmbedContentConfig(
-                    outputDimensionality=self.dims,
-                ),
-            )
-            return [e.values for e in result.embeddings]
-        except Exception as exc:
-            logger.error("Gemini embedding error: %s", exc)
-            raise
+        for attempt in range(1, 4):
+            try:
+                from google.genai import types as genai_types
+
+                result = self._client.models.embed_content(
+                    model=self.model,
+                    contents=texts,
+                    config=genai_types.EmbedContentConfig(
+                        outputDimensionality=self.dims,
+                    ),
+                )
+                return [e.values for e in result.embeddings]
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 3:
+                    delay = min(2 ** attempt + random.uniform(0, 1), 30.0)
+                    logger.warning(
+                        "Gemini embedding attempt %d failed (%s), retrying in %.1fs...",
+                        attempt, exc, delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error("Gemini embedding failed after 3 attempts: %s", exc)
+
+        raise last_exc  # type: ignore[misc]
 
     # ------------------------------------------------------------------
     # Public API
@@ -197,7 +306,7 @@ class GeminiEmbeddingProvider:
         Returns:
             List of embedding vectors aligned with *texts*.
         """
-        results: list[Optional[list[float]]] = [None] * len(texts)
+        results: list[list[float] | None] = [None] * len(texts)
         uncached_indices: list[int] = []
         uncached_texts: list[str] = []
 
@@ -243,7 +352,7 @@ class GeminiEmbeddingProvider:
         Returns a value in ``[-1, 1]`` (typically ``[0, 1]`` for text).
         Returns ``0.0`` if either vector has zero magnitude.
         """
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=False))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(x * x for x in b))
         if norm_a == 0.0 or norm_b == 0.0:
@@ -287,7 +396,7 @@ class LocalEmbeddingProvider:
             raise ImportError(
                 "sentence-transformers is required for offline mode. "
                 "Install with: pip install sentence-transformers"
-            )
+            ) from None
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a list of strings using the local model.
@@ -308,7 +417,7 @@ class LocalEmbeddingProvider:
     @staticmethod
     def cosine_similarity(a: list[float], b: list[float]) -> float:
         """Compute the cosine similarity between two embedding vectors."""
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=False))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(x * x for x in b))
         if norm_a == 0.0 or norm_b == 0.0:

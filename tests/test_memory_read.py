@@ -1,15 +1,14 @@
 """Tests for MemoryReader — RRF fusion, heuristic rerank, adaptive strategy."""
 from __future__ import annotations
-import asyncio
+
 import datetime
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 
 def make_reader():
-    from core.memory.reader import MemoryReader
     from core.memory.database import MemoryDatabase
     from core.memory.kg import KnowledgeGraph
+    from core.memory.reader import MemoryReader
 
     db = MemoryDatabase(":memory:")
     embedder = MagicMock()
@@ -46,7 +45,7 @@ def test_rrf_fuse_merges_hits():
 
 
 def test_rrf_fuse_empty_inputs():
-    reader, db = make_reader()
+    reader, _db = make_reader()
     assert reader.rrf_fuse([], []) == []
 
 
@@ -59,7 +58,7 @@ def test_rrf_fuse_single_list():
 
 
 def test_rrf_fuse_skips_missing_ids():
-    reader, db = make_reader()
+    reader, _db = make_reader()
     # ID 99999 doesn't exist in DB
     result = reader.rrf_fuse([{"id": 99999}], [])
     assert result == []

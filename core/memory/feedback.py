@@ -11,7 +11,6 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +155,7 @@ class RetrievalFeedbackCollector:
         * ``access_count_log`` — ``log1p(access_count)`` / 5  (soft-caps at ~148
           accesses mapping to 1.0)
         * ``importance``       — stored importance value in ``[0, 1]``
-        * ``age_days``         — ``(now − created_at) / 86400``; negative ages
+        * ``age_days``         — ``(now - created_at) / 86400``; negative ages
           are clamped to 0
         * ``category_match``   — 1.0 if the memory's category appears as a word
           in the query, else 0.0
@@ -187,11 +186,7 @@ class RetrievalFeedbackCollector:
 
         # age_days
         created_at = memory.get("created_at", now)
-        if isinstance(created_at, (int, float)):
-            age_seconds = now - float(created_at)
-        else:
-            # Fallback: assume already 0 days old
-            age_seconds = 0.0
+        age_seconds = now - float(created_at) if isinstance(created_at, (int, float)) else 0.0
         age_days = max(0.0, age_seconds / 86400.0)
 
         # category_match
@@ -261,7 +256,7 @@ class RetrievalFeedbackCollector:
         """Numerically stable sigmoid function."""
         return 1.0 / (1.0 + math.exp(-max(-500.0, min(500.0, z))))
 
-    def train_logistic_regression(self) -> Optional[dict]:
+    def train_logistic_regression(self) -> dict | None:
         """Fit a logistic-regression model on buffered feedback data.
 
         Uses full-batch gradient descent for up to 100 epochs with a fixed
@@ -445,7 +440,7 @@ class RetrievalFeedbackCollector:
         logger.debug("persist_retrieval_log: flushed %d events for session %s.", count, session_id)
         return count
 
-    def maybe_auto_train(self, threshold: int = 200) -> Optional[dict]:
+    def maybe_auto_train(self, threshold: int = 200) -> dict | None:
         """Trigger LR training when enough retrieval log data exists.
 
         Checks the retrieval_log table row count. If it exceeds *threshold*,
@@ -473,7 +468,7 @@ class RetrievalFeedbackCollector:
             logger.info("maybe_auto_train: trained and persisted weights (n=%d).", result.get("n_samples", 0))
         return result
 
-    def load_weights(self) -> Optional[dict]:
+    def load_weights(self) -> dict | None:
         """Load previously saved weights from the database ``config`` table.
 
         Returns:

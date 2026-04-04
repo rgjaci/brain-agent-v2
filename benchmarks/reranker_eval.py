@@ -13,8 +13,6 @@ import datetime
 import math
 import sys
 import time
-from typing import NamedTuple
-
 
 # ── evaluation dataset ────────────────────────────────────────────────────────
 
@@ -172,10 +170,10 @@ def main():
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    print(f"\n=== Reranker Eval (NDCG@K) ===\n")
+    print("\n=== Reranker Eval (NDCG@K) ===\n")
     metrics = run_eval(verbose=args.verbose)
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  Baseline NDCG@{metrics['k']}:  {metrics['avg_baseline_ndcg']:.4f}")
     print(f"  Reranked NDCG@{metrics['k']}:  {metrics['avg_reranked_ndcg']:.4f}")
     delta = metrics["improvement"]

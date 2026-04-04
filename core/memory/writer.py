@@ -19,10 +19,9 @@ swallowed — the writer must never crash the agent.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-import math
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +184,7 @@ class MemoryWriter:
         )
 
         # ── 3: Procedure extraction (conditional) ──────────────────────────
-        procedure: Optional[ProcedureExtraction] = None
+        procedure: ProcedureExtraction | None = None
         if len(tool_calls) >= 2 and self.interaction_succeeded(agent_msg):
             try:
                 procedure = await self.extract_procedure(
@@ -240,10 +239,8 @@ class MemoryWriter:
         # Cross-link: every new memory ↔ every extracted entity
         for mid in stored_memory_ids:
             for eid in entity_ids:
-                try:
+                with contextlib.suppress(Exception):
                     self.db.link_memory_entity(mid, eid)
-                except Exception:
-                    pass
 
         for relation in relations_raw:
             try:
@@ -415,7 +412,7 @@ class MemoryWriter:
         user_msg: str,
         agent_msg: str,
         tool_calls: list,
-    ) -> Optional[ProcedureExtraction]:
+    ) -> ProcedureExtraction | None:
         """Use the LLM to infer a reusable procedure from a multi-tool interaction.
 
         Only called when ``len(tool_calls) >= 2`` and the interaction
@@ -532,13 +529,13 @@ class MemoryWriter:
         Returns:
             Filtered list containing only novel facts.
         """
-        import struct as _struct
         import math as _math
+        import struct as _struct
 
         def _cosine_sim(a: list[float], b: list[float]) -> float:
             if len(a) != len(b):
                 return 0.0
-            dot = sum(x * y for x, y in zip(a, b))
+            dot = sum(x * y for x, y in zip(a, b, strict=False))
             na = _math.sqrt(sum(x * x for x in a))
             nb = _math.sqrt(sum(x * x for x in b))
             if na == 0.0 or nb == 0.0:
@@ -804,7 +801,6 @@ class MemoryWriter:
         Returns:
             The new memory row ID.
         """
-        import json as _json
         import time as _time
 
         source_path = chunk.source_path
@@ -862,8 +858,8 @@ class MemoryWriter:
         Returns:
             List of superseded memory IDs.
         """
-        import struct as _struct
         import math as _math
+        import struct as _struct
 
         new_mem = self.db.get_memory(new_memory_id)
         if not new_mem:
@@ -891,7 +887,7 @@ class MemoryWriter:
         def _cosine_sim(a, b):
             if len(a) != len(b):
                 return 0.0
-            dot = sum(x * y for x, y in zip(a, b))
+            dot = sum(x * y for x, y in zip(a, b, strict=False))
             na = _math.sqrt(sum(x * x for x in a))
             nb = _math.sqrt(sum(x * x for x in b))
             if na == 0.0 or nb == 0.0:

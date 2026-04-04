@@ -3,8 +3,8 @@ Functional tests for brain_agent.core.llm.tool_parser
 Run: python3 /mnt/user-data/workspace/brain_agent/core/llm/_test_runner.py
 """
 import importlib.util
-import sys
 import os
+import sys
 
 # ---------------------------------------------------------------------------
 # Bootstrap: load the module directly from its on-disk path

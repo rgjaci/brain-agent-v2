@@ -8,15 +8,49 @@ uses SQLite's built-in FTS5.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
 import struct
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Schema version
+# ──────────────────────────────────────────────────────────────────────────────
+# Increment this when you add a migration below.
+SCHEMA_VERSION = 2
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Migrations
+# ──────────────────────────────────────────────────────────────────────────────
+# Each migration is a function that takes a sqlite3.Connection and applies
+# changes.  Migrations are run in order by version number.
+
+MIGRATIONS: dict[int, list[str]] = {
+    # v1: Initial migration — ensures all current tables exist.
+    #     Future migrations go here as version 2, 3, etc.
+    1: [
+        # Example future migration:
+        # "ALTER TABLE relations ADD COLUMN temporal_scope TEXT DEFAULT 'global';",
+    ],
+    2: [
+        # Add tier column to procedures table for hierarchical procedural memory.
+        # This migration is safe to run even if the column already exists
+        # (the ALTER TABLE will fail silently in that case).
+        "ALTER TABLE procedures ADD COLUMN tier INTEGER NOT NULL DEFAULT 2;",
+    ],
+}
+
+_DDL_SCHEMA_VERSION = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL DEFAULT 0
+);
+"""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Schema DDL
@@ -126,6 +160,7 @@ CREATE TABLE IF NOT EXISTS procedures (
     steps           TEXT    NOT NULL,
     warnings        TEXT,
     context         TEXT,
+    tier            INTEGER NOT NULL DEFAULT 2,
     source          TEXT    NOT NULL DEFAULT 'learned',
     success_count   INTEGER NOT NULL DEFAULT 0,
     failure_count   INTEGER NOT NULL DEFAULT 0,
@@ -301,7 +336,9 @@ class MemoryDatabase:
 
     def __init__(self, db_path: Path | str) -> None:
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Only create parent directory for file-based databases
+        if str(db_path) != ":memory:":
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._vec_enabled: bool = False
         self._conn: sqlite3.Connection = self._connect()
         self._setup()
@@ -338,7 +375,7 @@ class MemoryDatabase:
                 "Install it with: pip install sqlite-vec  "
                 "Vector search will be disabled."
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "Failed to load sqlite-vec extension (%s).  "
                 "Vector search will be disabled.",
@@ -348,10 +385,13 @@ class MemoryDatabase:
     # ── Schema setup ──────────────────────────────────────────────────────────
 
     def _setup(self) -> None:
-        """Create all tables, virtual tables, triggers, and indexes."""
+        """Create all tables, virtual tables, triggers, indexes, and run migrations."""
         self._load_sqlite_vec()
 
         with self._conn:
+            # Schema version tracking
+            self._conn.executescript(_DDL_SCHEMA_VERSION)
+
             # Core tables
             self._conn.executescript(_DDL_MEMORIES)
             self._conn.executescript(_DDL_MEMORY_FTS)
@@ -374,11 +414,86 @@ class MemoryDatabase:
                 self._conn.executescript(_DDL_ENTITY_VECTORS)
                 self._conn.executescript(_DDL_PROCEDURE_VECTORS)
 
+        # Run migrations
+        self._run_migrations()
+
         logger.debug(
             "MemoryDatabase schema initialised (vec_enabled=%s, path=%s).",
             self._vec_enabled,
             self.db_path,
         )
+
+    # ── Migrations ────────────────────────────────────────────────────────────
+
+    def _run_migrations(self) -> None:
+        """Apply any pending schema migrations.
+
+        Reads the current version from ``schema_version``, then executes all
+        migration SQL statements for versions greater than the current one.
+        Updates the version table after each successful migration batch.
+
+        Note: ``ALTER TABLE ADD COLUMN`` is idempotent in the sense that if
+        the column already exists the statement fails — we catch that specific
+        error and continue, since it means the schema is already up to date.
+        """
+        try:
+            row = self._conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+            current_version = row[0] if row else 0
+        except sqlite3.OperationalError:
+            current_version = 0
+
+        if current_version >= SCHEMA_VERSION:
+            return
+
+        logger.info(
+            "Running schema migrations: %d → %d",
+            current_version, SCHEMA_VERSION,
+        )
+
+        for version in range(current_version + 1, SCHEMA_VERSION + 1):
+            migration_sqls = MIGRATIONS.get(version, [])
+            if not migration_sqls:
+                logger.debug("Migration v%d: no-op", version)
+                continue
+
+            try:
+                with self._conn:
+                    for sql in migration_sqls:
+                        try:
+                            self._conn.execute(sql)
+                        except sqlite3.OperationalError as exc:
+                            # "duplicate column name" means the migration was
+                            # already applied via DDL — not a real error.
+                            if "duplicate column" in str(exc).lower():
+                                logger.debug(
+                                    "Migration v%d: column already exists (from DDL), skipping.",
+                                    version,
+                                )
+                            else:
+                                raise
+                logger.info("Migration v%d applied successfully.", version)
+            except sqlite3.OperationalError as exc:
+                logger.error(
+                    "Migration v%d failed: %s.  "
+                    "Your database may be on a newer schema version.",
+                    version, exc,
+                )
+                raise
+
+        # Update version
+        with self._conn:
+            self._conn.execute("DELETE FROM schema_version")
+            self._conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+        logger.info("Schema version updated to %d.", SCHEMA_VERSION)
+
+    @property
+    def schema_version(self) -> int:
+        """Return the current database schema version."""
+        try:
+            row = self._conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+            return row[0] if row else 0
+        except sqlite3.OperationalError:
+            return 0
 
     # ── Generic query helper ──────────────────────────────────────────────────
 
@@ -409,7 +524,7 @@ class MemoryDatabase:
         source: str = "user",
         importance: float = 0.5,
         confidence: float = 1.0,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> int:
         """Insert a new episodic memory and return its row ID.
 
@@ -470,7 +585,7 @@ class MemoryDatabase:
         )
         return cursor.lastrowid  # type: ignore[return-value]
 
-    def get_memory(self, memory_id: int) -> Optional[dict[str, Any]]:
+    def get_memory(self, memory_id: int) -> dict[str, Any] | None:
         """Fetch a single memory by primary key.
 
         Args:
@@ -486,10 +601,8 @@ class MemoryDatabase:
             return None
         result = _row_to_dict(row)
         if result.get("metadata"):
-            try:
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
                 result["metadata"] = json.loads(result["metadata"])
-            except (json.JSONDecodeError, TypeError):
-                pass
         return result
 
     def update_memory_access(self, memory_id: int) -> None:
@@ -673,8 +786,8 @@ class MemoryDatabase:
         self,
         name: str,
         entity_type: str = "concept",
-        description: Optional[str] = None,
-        properties: Optional[dict] = None,
+        description: str | None = None,
+        properties: dict | None = None,
         importance: float = 0.5,
         source: str = "inferred",
     ) -> int:
@@ -708,8 +821,8 @@ class MemoryDatabase:
         self,
         name: str,
         entity_type: str = "concept",
-        description: Optional[str] = None,
-        properties: Optional[dict] = None,
+        description: str | None = None,
+        properties: dict | None = None,
         importance: float = 0.5,
         source: str = "inferred",
     ) -> int:
@@ -757,9 +870,9 @@ class MemoryDatabase:
 
     def get_entity(
         self,
-        entity_id: Optional[int] = None,
-        name: Optional[str] = None,
-    ) -> Optional[dict[str, Any]]:
+        entity_id: int | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any] | None:
         """Fetch an entity by ID or name.
 
         At least one of *entity_id* or *name* must be provided.
@@ -786,10 +899,8 @@ class MemoryDatabase:
             return None
         result = _row_to_dict(row)
         if result.get("properties"):
-            try:
+            with contextlib.suppress(json.JSONDecodeError, TypeError):
                 result["properties"] = json.loads(result["properties"])
-            except (json.JSONDecodeError, TypeError):
-                pass
         return result
 
     # ── Relations ─────────────────────────────────────────────────────────────
@@ -799,7 +910,7 @@ class MemoryDatabase:
         source_id: int,
         target_id: int,
         relation_type: str,
-        properties: Optional[dict] = None,
+        properties: dict | None = None,
         confidence: float = 1.0,
         source: str = "inferred",
     ) -> int:
@@ -859,17 +970,15 @@ class MemoryDatabase:
         for row in rows:
             d = _row_to_dict(row)
             if d.get("properties"):
-                try:
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
                     d["properties"] = json.loads(d["properties"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
             result.append(d)
         return result
 
     # ── Conversations ────────────────────────────────────────────────────────
 
     def store_conversation(
-        self, session_id: str, role: str, content: str, metadata: Optional[dict] = None
+        self, session_id: str, role: str, content: str, metadata: dict | None = None
     ) -> int:
         """Store a conversation message.
 
@@ -918,7 +1027,7 @@ class MemoryDatabase:
 
     # ── Conversation cleanup ─────────────────────────────────────────────────
 
-    def prune_conversations(self, session_id: Optional[str] = None,
+    def prune_conversations(self, session_id: str | None = None,
                             keep_last: int = 100) -> int:
         """Delete old conversation rows, keeping the most recent *keep_last* per session.
 
@@ -930,7 +1039,7 @@ class MemoryDatabase:
             Number of rows deleted.
         """
         if session_id:
-            rows = self._conn.execute(
+            self._conn.execute(
                 """
                 DELETE FROM conversations
                  WHERE session_id = ?
@@ -944,7 +1053,7 @@ class MemoryDatabase:
                 (session_id, session_id, keep_last),
             )
         else:
-            rows = self._conn.execute(
+            self._conn.execute(
                 """
                 DELETE FROM conversations
                  WHERE id NOT IN (

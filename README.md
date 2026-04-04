@@ -4,6 +4,22 @@ A memory-first AI agent that proves a 4B parameter model with an exceptional mem
 
 The LLM is a processor. Memory is the intelligence.
 
+## Documentation
+
+📚 **[Full Documentation](docs/README.md)** — Architecture, setup, extension guides, troubleshooting, and more.
+
+| Guide | Description |
+|---|---|
+| [Architecture](docs/architecture.md) | System architecture, component details, data flow diagrams |
+| [Setup](docs/setup.md) | Installation, configuration, deployment |
+| [Memory System](docs/memory-system.md) | Database schema, knowledge graph, consolidation, dream engine |
+| [Retrieval Pipeline](docs/retrieval-pipeline.md) | 8-stage retrieval pipeline with RRF fusion and reranking |
+| [Extension Guide](docs/extension-guide.md) | Add tools, providers, categories, reasoning strategies |
+| [Token Budget](docs/token-budget.md) | Context window allocation and tuning |
+| [Troubleshooting](docs/troubleshooting.md) | Common issues and solutions |
+| [Testing](docs/testing.md) | Test suite overview and writing tests |
+| [Benchmarks](docs/benchmarks.md) | Benchmark methodology and results |
+
 ## Quick Start
 
 ```bash
@@ -59,7 +75,7 @@ User Input
 1. **Retrieval-Specialized Context Usage** -- structured prompts that teach the model to follow procedures and cite memories
 2. **Adaptive Retrieval** -- confidence-based triggering (skip / conservative / normal / aggressive)
 3. **Hierarchical Procedural Memory** -- UCB1-scored procedures extracted from successful multi-tool interactions
-4. **Hybrid Search + Cross-Encoder Reranking** -- FTS5 + vector search + RRF fusion + heuristic/LR reranking
+4. **Hybrid Search + Reranking** -- FTS5 + vector search + RRF fusion + heuristic/LR reranking (cross-encoder deferred to Phase 4+)
 5. **Graph-Augmented Memory** -- lightweight SQLite KG with BFS traversal
 
 ## CLI Usage

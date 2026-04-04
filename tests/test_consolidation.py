@@ -1,8 +1,10 @@
 """Tests for consolidation.py — decay, promote, contradictions, scheduling."""
 from __future__ import annotations
+
 import time
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 
 @pytest.fixture
@@ -78,7 +80,8 @@ async def test_resolve_contradictions_keeps_newest(engine, db):
     # The resolver groups by first 3 words as topic key
     # So both must share the same 3-word prefix to be detected as contradictions
     db.insert_memory("User prefers vim for editing code", category="preference")
-    import time; time.sleep(0.01)
+    import time
+    time.sleep(0.01)
     db.insert_memory("User prefers emacs for editing code", category="preference")
     # These both have topic key "user prefers vim" / "user prefers emacs" — different keys.
     # To actually trigger contradiction, we need same 3 words:

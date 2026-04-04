@@ -14,10 +14,11 @@ Flow per turn:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +42,9 @@ class TurnResult:
     response: str
     tool_calls: list[dict] = field(default_factory=list)
     memories_used: int = 0
-    procedure_used: Optional[str] = None
+    procedure_used: str | None = None
     tokens_used: int = 0
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class BrainAgent:
@@ -74,8 +75,8 @@ class BrainAgent:
         consolidator=None,
         dream_engine=None,
         reasoning_engine=None,
-        session_id: Optional[str] = None,
-        on_event: Optional[Callable[[str, dict], None]] = None,
+        session_id: str | None = None,
+        on_event: Callable[[str, dict], None] | None = None,
     ):
         self.llm = llm
         self.embedder = embedder
@@ -95,7 +96,7 @@ class BrainAgent:
         self._current_tool_calls: list[dict] = []
         self._turn_count: int = 0
         self._last_active: float = 0.0
-        self._write_task: Optional[asyncio.Task] = None
+        self._write_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------ #
     #  Main entry point                                                    #
@@ -117,10 +118,8 @@ class BrainAgent:
                 task_age = 0
             if task_age > 120:
                 self._write_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await self._write_task
-                except (asyncio.CancelledError, Exception):
-                    pass
         self._current_tool_calls = []
         self._emit("turn_start", {"input": user_input})
 
@@ -433,10 +432,8 @@ class BrainAgent:
     def _emit(self, event_type: str, data: dict):
         """Fire event to TUI or other listeners."""
         if self.on_event:
-            try:
+            with contextlib.suppress(Exception):
                 self.on_event(event_type, data)
-            except Exception:
-                pass
 
     def new_session(self):
         """Start a fresh conversation session."""
@@ -447,3 +444,32 @@ class BrainAgent:
     @property
     def session(self) -> str:
         return self.session_id
+
+    # ------------------------------------------------------------------ #
+    #  Feedback                                                            #
+    # ------------------------------------------------------------------ #
+
+    def record_feedback(self, accepted: bool) -> None:
+        """Record explicit user feedback for the last turn.
+
+        Updates the retrieval feedback collector with whether the user
+        found the agent's response helpful. This trains the reranker
+        over time.
+
+        Args:
+            accepted: True if the response was helpful, False otherwise.
+        """
+        if self.feedback is None:
+            logger.debug("record_feedback: no feedback collector available.")
+            return
+
+        try:
+            self.feedback.record_outcome(self.session_id, accepted)
+            self._emit("feedback", {"accepted": accepted, "session_id": self.session_id})
+            logger.info(
+                "record_feedback: %s feedback for session %s",
+                "positive" if accepted else "negative",
+                self.session_id,
+            )
+        except Exception as exc:
+            logger.warning("record_feedback failed: %s", exc)

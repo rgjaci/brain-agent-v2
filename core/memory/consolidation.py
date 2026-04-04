@@ -18,15 +18,13 @@ once every :data:`CONSOLIDATION_INTERVAL` turns.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import time
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .database import MemoryDatabase
-    from ..llm.provider import OllamaProvider
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +43,13 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
         b: Second vector.
 
     Returns:
-        Cosine similarity in ``[−1, 1]``; returns 0.0 if either vector is
+        Cosine similarity in ``[-1, 1]``; returns 0.0 if either vector is
         zero-length or the two vectors have different lengths.
     """
     if len(a) != len(b) or not a:
         return 0.0
 
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(y * y for y in b))
 
@@ -125,7 +123,7 @@ class ConsolidationEngine:
         try:
             merges = await self.merge_near_duplicates()
             logger.info("consolidate: merged %d near-duplicate pairs.", merges)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("consolidate: merge_near_duplicates failed — %s", exc)
             merges = 0
 
@@ -134,21 +132,21 @@ class ConsolidationEngine:
             logger.info(
                 "consolidate: resolved %d contradictions.", resolutions
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("consolidate: resolve_contradictions failed — %s", exc)
             resolutions = 0
 
         try:
             decayed = self.apply_decay()
             logger.info("consolidate: decayed %d stale memories.", decayed)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("consolidate: apply_decay failed — %s", exc)
             decayed = 0
 
         try:
             promoted = self.promote_important()
             logger.info("consolidate: promoted %d frequently-accessed memories.", promoted)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("consolidate: promote_important failed — %s", exc)
             promoted = 0
 
@@ -156,14 +154,21 @@ class ConsolidationEngine:
         try:
             pruned = self.db.prune_conversations(keep_last=100)
             logger.info("consolidate: pruned %d old conversation rows.", pruned)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("consolidate: prune_conversations failed — %s", exc)
+
+        # 6. Conversation summarization (sessions older than 7 days)
+        try:
+            summaries = await self.summarize_old_sessions()
+            logger.info("consolidate: summarized %d old sessions.", summaries)
+        except Exception as exc:
+            logger.warning("consolidate: summarize_old_sessions failed — %s", exc)
 
         elapsed = time.time() - start
         logger.info(
             "consolidate: pass complete in %.2fs — "
-            "merges=%d, resolutions=%d, decayed=%d, promoted=%d.",
-            elapsed, merges, resolutions, decayed, promoted,
+            "merges=%d, resolutions=%d, decayed=%d, promoted=%d, summaries=%d.",
+            elapsed, merges, resolutions, decayed, promoted, summaries if 'summaries' in dir() else 0,
         )
 
     # ── Step 1 — Near-duplicate merging ──────────────────────────────────────
@@ -201,13 +206,13 @@ class ConsolidationEngine:
         neighbours are fetched; pairs with cosine similarity > 0.95 are
         merged.
         """
-        import struct as _struct
         import math as _math
+        import struct as _struct
 
         def _cosine_sim(a: list[float], b: list[float]) -> float:
             if len(a) != len(b):
                 return 0.0
-            dot = sum(x * y for x, y in zip(a, b))
+            dot = sum(x * y for x, y in zip(a, b, strict=False))
             na = _math.sqrt(sum(x * x for x in a))
             nb = _math.sqrt(sum(x * x for x in b))
             if na == 0.0 or nb == 0.0:
@@ -290,7 +295,7 @@ class ConsolidationEngine:
                             "merge_near_duplicates: merged %d → %d (sim=%.4f).",
                             drop_id, keep_id, sim,
                         )
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         logger.warning(
                             "merge_near_duplicates: could not merge "
                             "%d → %d — %s.",
@@ -354,7 +359,7 @@ class ConsolidationEngine:
 
         resolution_count = 0
 
-        for (category, topic_key), group in groups.items():
+        for (_category, topic_key), group in groups.items():
             if len(group) <= 1:
                 continue
 
@@ -383,7 +388,7 @@ class ConsolidationEngine:
                         "%d, kept %d (topic=%r).",
                         duplicate["id"], keep["id"], topic_key,
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.warning(
                         "resolve_contradictions: could not delete memory %d — %s.",
                         duplicate["id"], exc,
@@ -410,7 +415,7 @@ class ConsolidationEngine:
             Number of memory rows whose importance was reduced.
         """
         try:
-            rows = self.db.execute(
+            self.db.execute(
                 """
                 UPDATE memories
                    SET importance  = MAX(0.1, importance - 0.05)
@@ -423,7 +428,7 @@ class ConsolidationEngine:
             count_rows = self.db.execute("SELECT changes() AS n")
             count = int(count_rows[0]["n"]) if count_rows else 0
             return count
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("apply_decay: SQL failed — %s", exc)
             return 0
 
@@ -456,6 +461,134 @@ class ConsolidationEngine:
             count_rows = self.db.execute("SELECT changes() AS n")
             count = int(count_rows[0]["n"]) if count_rows else 0
             return count
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("promote_important: SQL failed — %s", exc)
             return 0
+
+    # ── Step 6 — Conversation summarization ──────────────────────────────────
+
+    async def summarize_old_sessions(self, max_age_days: int = 7) -> int:
+        """Summarize conversation sessions older than *max_age_days*.
+
+        For each old session:
+        1. Fetch all messages in the session.
+        2. Use the LLM to generate a concise summary.
+        3. Store the summary as a ``conversation_summary`` memory.
+        4. Delete the raw conversation rows to free space.
+
+        Args:
+            max_age_days: Minimum age of sessions to summarize.
+
+        Returns:
+            Number of sessions summarized.
+        """
+        if self.llm is None:
+            logger.debug("summarize_old_sessions: no LLM available, skipping.")
+            return 0
+
+        cutoff = time.time() - (max_age_days * 86400)
+
+        # Find old session IDs
+        try:
+            sessions = self.db.execute(
+                """
+                SELECT DISTINCT session_id, MIN(created_at) as first_msg
+                  FROM conversations
+                 WHERE created_at < ?
+                 GROUP BY session_id
+                 ORDER BY first_msg ASC
+                 LIMIT 10
+                """,
+                (cutoff,),
+            )
+        except Exception as exc:
+            logger.warning("summarize_old_sessions: query failed — %s", exc)
+            return 0
+
+        if not sessions:
+            logger.debug("summarize_old_sessions: no old sessions to summarize.")
+            return 0
+
+        summary_count = 0
+        for session_row in sessions:
+            session_id = session_row["session_id"]
+            try:
+                # Fetch all messages for this session
+                messages = self.db.execute(
+                    """
+                    SELECT role, content FROM conversations
+                     WHERE session_id = ?
+                     ORDER BY created_at ASC
+                    """,
+                    (session_id,),
+                )
+
+                if not messages:
+                    continue
+
+                # Build conversation text for summarization
+                conv_text = "\n".join(
+                    f"{m['role']}: {m['content'][:200]}" for m in messages[:50]
+                )
+
+                # Generate summary
+                summary = await self._generate_session_summary(conv_text)
+                if summary:
+                    # Store summary as a memory
+                    self.db.insert_memory(
+                        content=f"[Session Summary] {summary}",
+                        category="conversation_summary",
+                        source=f"session:{session_id}",
+                        importance=0.4,
+                        confidence=0.8,
+                    )
+                    summary_count += 1
+                    logger.debug(
+                        "summarize_old_sessions: summarized session %s",
+                        session_id,
+                    )
+
+                # Delete raw conversation rows
+                self.db.execute(
+                    "DELETE FROM conversations WHERE session_id = ?",
+                    (session_id,),
+                )
+
+            except Exception as exc:
+                logger.warning(
+                    "summarize_old_sessions: failed for session %s — %s",
+                    session_id, exc,
+                )
+
+        return summary_count
+
+    async def _generate_session_summary(self, conversation: str) -> str:
+        """Use the LLM to generate a concise session summary.
+
+        Args:
+            conversation: Full conversation text (truncated).
+
+        Returns:
+            Summary string, or empty string on failure.
+        """
+        prompt = (
+            "Summarize this conversation in 2-3 sentences. "
+            "Focus on: decisions made, facts learned, preferences expressed, "
+            "and unresolved questions. Be concise.\n\n"
+            f"Conversation:\n{conversation[:4000]}"
+        )
+
+        try:
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(
+                None,
+                lambda: self.llm.generate(  # type: ignore[union-attr]
+                    [{"role": "user", "content": prompt}],
+                    temperature=0.1,
+                    max_tokens=300,
+                ),
+            )
+            return summary.strip()
+        except Exception as exc:
+            logger.warning("_generate_session_summary failed: %s", exc)
+            return ""

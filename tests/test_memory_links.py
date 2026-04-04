@@ -1,9 +1,6 @@
 """Tests for memory source linking and memory ↔ entity linking."""
 from __future__ import annotations
 
-import pytest
-
-
 # ── Memory source linking ────────────────────────────────────────────────────
 
 def test_link_memory_source(db):
@@ -78,7 +75,7 @@ def test_get_entity_memories(db):
     eid = db.insert_entity("Rust", entity_type="language")
     mid1 = db.insert_memory("User is learning Rust", category="fact")
     mid2 = db.insert_memory("Rust has a borrow checker", category="knowledge")
-    mid3 = db.insert_memory("Unrelated fact about Python", category="fact")
+    db.insert_memory("Unrelated fact about Python", category="fact")
     db.link_memory_entity(mid1, eid)
     db.link_memory_entity(mid2, eid)
 

@@ -10,13 +10,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 import time
-from pathlib import Path
 from typing import NamedTuple
 from unittest.mock import AsyncMock, MagicMock
-
 
 # ── test corpus ───────────────────────────────────────────────────────────────
 
@@ -84,7 +81,7 @@ def build_fake_embedder(memory_embeddings: dict[int, list[float]]):
         import random
         base = [0.1] * 768
         noise = [random.gauss(0, 0.05) for _ in range(768)]
-        return [b + n for b, n in zip(base, noise)]
+        return [b + n for b, n in zip(base, noise, strict=False)]
 
     embedder.embed_query = AsyncMock(side_effect=embed_query)
     return embedder
@@ -115,7 +112,7 @@ async def run_benchmark(top_k: int = 10, verbose: bool = False) -> dict:
     results: list[RecallResult] = []
     total_start = time.perf_counter()
 
-    for mem_idx, (content, category, importance, queries) in enumerate(CORPUS):
+    for mem_idx, (_content, _category, _importance, queries) in enumerate(CORPUS):
         expected_id = memory_ids[mem_idx]
         for query in queries:
             # Patch vector_search to return all memories (simulate recall scenario)
@@ -176,7 +173,7 @@ def main():
     print(f"\n=== Recall Benchmark (top-{args.top_k}) ===\n")
     metrics = asyncio.run(run_benchmark(top_k=args.top_k, verbose=args.verbose))
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  Recall@{args.top_k}: {metrics['recall_at_k']:.1%}")
     print(f"  MRR:         {metrics['mrr']:.4f}")
     print(f"  Found:       {metrics['found']} / {metrics['total_queries']}")

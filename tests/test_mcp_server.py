@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +121,7 @@ def test_kg_query_not_found(setup_server):
 
 
 def test_kg_query_found(setup_server, db):
-    eid = db.insert_entity("Python", entity_type="language", description="A programming language")
+    db.insert_entity("Python", entity_type="language", description="A programming language")
     from server.mcp_server import kg_query
     result = kg_query("Python")
     assert "Python" in result

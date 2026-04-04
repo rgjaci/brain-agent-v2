@@ -1,8 +1,7 @@
 """Tests for Reranker — heuristic scoring, best-at-edges."""
 from __future__ import annotations
+
 import datetime
-import pytest
-from unittest.mock import MagicMock
 
 
 def make_reranker():

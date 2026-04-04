@@ -1,14 +1,15 @@
 """Tests for MemoryWriter — fact extraction, dedup, graph extraction."""
 from __future__ import annotations
-import asyncio
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 def make_writer(llm_response=None):
-    from core.memory.writer import MemoryWriter
-    from core.memory.kg import KnowledgeGraph
     from core.memory.database import MemoryDatabase
+    from core.memory.kg import KnowledgeGraph
+    from core.memory.writer import MemoryWriter
 
     db = MemoryDatabase(":memory:")
     kg = KnowledgeGraph(db)
@@ -31,7 +32,7 @@ async def test_extract_facts_returns_list():
         {"content": "User prefers ed25519 SSH keys", "category": "preference", "importance": 0.8},
         {"content": "Production server is 10.0.0.1", "category": "fact", "importance": 0.9},
     ]
-    writer, db, kg = make_writer(llm_response=facts_payload)
+    writer, _db, _kg = make_writer(llm_response=facts_payload)
     facts = await writer.extract_facts("setup SSH", "Done, used ed25519")
     assert isinstance(facts, list)
 
@@ -84,7 +85,7 @@ async def test_deduplicate_removes_exact_duplicate():
 @pytest.mark.asyncio
 async def test_deduplicate_keeps_different_fact():
     from core.memory.writer import FactExtraction
-    writer, db, _ = make_writer()
+    writer, _db, _ = make_writer()
 
     writer.embedder.embed_texts = AsyncMock(return_value=[[0.1] * 768])
     writer.db.vector_search = MagicMock(return_value=[])  # no similar memories

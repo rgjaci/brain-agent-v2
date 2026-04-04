@@ -138,10 +138,27 @@ def main():
                         help="Output JSONL file path")
     parser.add_argument("--distractors", type=int, default=3,
                         help="Max distractor documents per example")
+    parser.add_argument("--min-examples", type=int, default=100,
+                        help="Minimum examples needed for useful training")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="Print detailed statistics")
     args = parser.parse_args()
 
     db_path = str(Path(args.db).expanduser())
-    export_raft_data(db_path, args.output, args.distractors)
+    count = export_raft_data(db_path, args.output, args.distractors)
+
+    # Print summary statistics
+    if count > 0:
+        print("\nRAFT Data Export Summary:")
+        print(f"  Examples exported:     {count}")
+        print(f"  Ready for training:    {'Yes' if count >= args.min_examples else 'No'} (need {args.min_examples}+)")
+        print("\nNext steps:")
+        print(f"  1. Review the data: head -5 {args.output}")
+        print(f"  2. Fine-tune with: python scripts/raft_train.py --data {args.output}")
+        print("  3. Update config: extraction_model: 'your-finetuned-model'")
+    else:
+        print("\nNo examples found. The agent needs more interactions with retrieval feedback.")
+        print("Use the agent normally for a while, then run this export again.")
 
 
 if __name__ == "__main__":

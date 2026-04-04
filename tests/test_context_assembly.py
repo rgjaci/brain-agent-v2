@@ -1,6 +1,6 @@
 """Tests for ContextAssembler — token counting, memory packing, best-at-edges."""
 from __future__ import annotations
-import pytest
+
 from unittest.mock import MagicMock
 
 

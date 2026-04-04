@@ -13,8 +13,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ class WebSearchTool:
         self,
         db=None,
         writer=None,
-        permissions: Optional[dict] = None,
+        permissions: dict | None = None,
     ):
         self.db = db
         self.writer = writer

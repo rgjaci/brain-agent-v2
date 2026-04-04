@@ -1,8 +1,11 @@
 """Tests for memory/feedback.py — RetrievalFeedbackCollector."""
 from __future__ import annotations
+
 import time
+
 import pytest
-from core.memory.feedback import RetrievalFeedbackCollector, RetrievalEvent
+
+from core.memory.feedback import RetrievalFeedbackCollector
 
 
 @pytest.fixture

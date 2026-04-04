@@ -1,9 +1,11 @@
 from __future__ import annotations
+
 import json
-import time
 import logging
+import random
+import time
 from abc import ABC, abstractmethod
-from typing import Optional
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -23,7 +25,7 @@ class LLMProvider(ABC):
         """Count tokens in text."""
         ...
 
-    def chat(self, user_message: str, system: str = "", history: list[dict] = None) -> str:
+    def chat(self, user_message: str, system: str = "", history: list[dict] | None = None) -> str:
         """Simple chat interface."""
         messages = []
         if history:
@@ -63,15 +65,15 @@ class OpenRouterProvider(LLMProvider):
     def generate(
         self,
         messages: list[dict],
-        temperature: float = None,
-        max_tokens: int = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         system: str = "",
     ) -> str:
         temp = temperature if temperature is not None else self.default_temperature
         tokens = max_tokens if max_tokens is not None else self.default_max_tokens
 
         if system:
-            messages = [{"role": "system", "content": system}] + messages
+            messages = [{"role": "system", "content": system}, *messages]
 
         payload = {
             "model": self.model,
@@ -156,7 +158,7 @@ class OllamaProvider(LLMProvider):
             raise RuntimeError(
                 f"Cannot connect to Ollama at {self.base_url}. "
                 "Is Ollama running? Try: ollama serve"
-            )
+            ) from None
 
     # ------------------------------------------------------------------
     # Public API
@@ -165,11 +167,13 @@ class OllamaProvider(LLMProvider):
     def generate(
         self,
         messages: list[dict],
-        temperature: float = None,
-        max_tokens: int = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
         system: str = "",
     ) -> str:
         """Generate a response via the Ollama ``/api/chat`` endpoint.
+
+        Retries up to 3 times with exponential backoff on transient errors.
 
         Args:
             messages:    List of ``{"role": ..., "content": ...}`` dicts.
@@ -182,7 +186,7 @@ class OllamaProvider(LLMProvider):
 
         Raises:
             TimeoutError:  When Ollama does not respond within ``self.timeout`` seconds.
-            RuntimeError:  On any other HTTP/request error.
+            RuntimeError:  On any other HTTP/request error after retries exhausted.
         """
         temp = temperature if temperature is not None else self.default_temperature
         tokens = max_tokens if max_tokens is not None else self.default_max_tokens
@@ -203,37 +207,52 @@ class OllamaProvider(LLMProvider):
         if system:
             payload["system"] = system
 
-        start = time.time()
-        try:
-            r = requests.post(
-                f"{self.base_url}/api/chat",
-                json=payload,
-                timeout=self.timeout,
-            )
-            r.raise_for_status()
-            data = r.json()
-            content: str = data["message"]["content"]
-            elapsed = time.time() - start
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            start = time.time()
+            try:
+                r = requests.post(
+                    f"{self.base_url}/api/chat",
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                r.raise_for_status()
+                data = r.json()
+                content: str = data["message"]["content"]
+                elapsed = time.time() - start
 
-            prompt_tokens = data.get("prompt_eval_count", 0)
-            response_tokens = data.get("eval_count", 0)
-            logger.debug(
-                "LLM: %d+%d tokens, %.1fs", prompt_tokens, response_tokens, elapsed
-            )
+                prompt_tokens = data.get("prompt_eval_count", 0)
+                response_tokens = data.get("eval_count", 0)
+                logger.debug(
+                    "LLM: %d+%d tokens, %.1fs", prompt_tokens, response_tokens, elapsed
+                )
 
-            return content
+                return content
 
-        except requests.exceptions.Timeout:
-            raise TimeoutError(f"Ollama timed out after {self.timeout}s")
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Ollama API error: {e}") from e
+            except requests.exceptions.Timeout:
+                last_exc = TimeoutError(f"Ollama timed out after {self.timeout}s")
+            except requests.exceptions.ConnectionError:
+                last_exc = RuntimeError(f"Cannot connect to Ollama at {self.base_url}")
+            except requests.exceptions.RequestException as e:
+                last_exc = RuntimeError(f"Ollama API error: {e}")
+
+            if attempt < 3:
+                delay = min(2 ** attempt + random.uniform(0, 1), 30.0)
+                logger.warning(
+                    "Ollama generate attempt %d failed (%s), retrying in %.1fs...",
+                    attempt, last_exc, delay,
+                )
+                time.sleep(delay)
+
+        logger.error("Ollama generate failed after 3 attempts: %s", last_exc)
+        raise last_exc  # type: ignore[misc]
 
     def generate_json(
         self,
         messages: list[dict],
-        schema: dict = None,
+        schema: dict | None = None,
         temperature: float = 0.1,
-    ) -> "dict | list":
+    ) -> dict | list:
         """Generate a response and parse it as JSON.
 
         Strips Markdown code fences if present and retries up to 3 times on
@@ -263,16 +282,7 @@ class OllamaProvider(LLMProvider):
                 return json.loads(text)
             except json.JSONDecodeError:
                 if attempt < 2:
-                    current_messages = current_messages + [
-                        {"role": "assistant", "content": response},
-                        {
-                            "role": "user",
-                            "content": (
-                                "That was not valid JSON. "
-                                "Please return ONLY valid JSON, no markdown."
-                            ),
-                        },
-                    ]
+                    current_messages = [*current_messages, {"role": "assistant", "content": response}, {"role": "user", "content": "That was not valid JSON. " "Please return ONLY valid JSON, no markdown."}]
                     logger.warning(
                         "JSON parse failed (attempt %d), retrying...", attempt + 1
                     )
@@ -297,7 +307,7 @@ class OllamaProvider(LLMProvider):
             return len(text) // 4
 
     @classmethod
-    def from_env(cls) -> "LLMProvider":
+    def from_env(cls) -> LLMProvider:
         """Factory that returns an OpenRouterProvider when OPENROUTER_API_KEY is set,
         otherwise returns an OllamaProvider.
 

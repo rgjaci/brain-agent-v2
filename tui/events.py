@@ -1,10 +1,11 @@
 """Event bus for Brain Agent TUI real-time debug updates."""
 from __future__ import annotations
 
+import contextlib
 import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 
 @dataclass
@@ -27,10 +28,8 @@ class EventBus:
         event = AgentEvent(type=event_type, data=data)
         self._history.append(event)
         for sub in list(self._subscribers):
-            try:
+            with contextlib.suppress(Exception):
                 sub(event)
-            except Exception:
-                pass
 
     def subscribe(self, callback: Callable[[AgentEvent], None]):
         self._subscribers.append(callback)

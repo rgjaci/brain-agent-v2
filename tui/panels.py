@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING
 
 try:
     from textual.app import ComposeResult
+    from textual.reactive import reactive
     from textual.widget import Widget
     from textual.widgets import RichLog, Static
-    from textual.reactive import reactive
     HAS_TEXTUAL = True
 except ImportError:
     HAS_TEXTUAL = False
@@ -27,7 +27,7 @@ class ConversationPanel(Widget if HAS_TEXTUAL else object):
     }
     """
 
-    def compose(self) -> "ComposeResult":
+    def compose(self) -> ComposeResult:
         yield RichLog(id="conv_log", wrap=True, markup=True)
 
     def add_user(self, text: str):
@@ -56,11 +56,11 @@ class ActivityPanel(Widget if HAS_TEXTUAL else object):
     }
     """
 
-    def compose(self) -> "ComposeResult":
+    def compose(self) -> ComposeResult:
         yield Static("Memory Activity", id="activity_title")
         yield RichLog(id="activity_log", wrap=False, markup=True)
 
-    def add_event(self, event: "AgentEvent"):
+    def add_event(self, event: AgentEvent):
         from .events import format_event
         log = self.query_one("#activity_log", RichLog)
         line = format_event(event)
@@ -95,7 +95,7 @@ class TokenBudgetPanel(Widget if HAS_TEXTUAL else object):
     total_tokens: reactive = reactive(0) if HAS_TEXTUAL else 0
     budget: reactive = reactive(32000) if HAS_TEXTUAL else 32000
 
-    def compose(self) -> "ComposeResult":
+    def compose(self) -> ComposeResult:
         yield Static("Token Budget", id="budget_title")
         yield Static("", id="budget_bar")
         yield Static("", id="budget_detail")
@@ -134,7 +134,7 @@ class StatsPanel(Widget if HAS_TEXTUAL else object):
     }
     """
 
-    def compose(self) -> "ComposeResult":
+    def compose(self) -> ComposeResult:
         yield Static("Knowledge Base", id="stats_title")
         yield Static("Loading...", id="stats_content")
 

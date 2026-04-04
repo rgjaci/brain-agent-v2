@@ -1,7 +1,7 @@
 """Tests for ToolCallParser — XML parsing, multi-call, validation."""
 from __future__ import annotations
-import pytest
-from core.llm.tool_parser import ToolCallParser, ToolCall
+
+from core.llm.tool_parser import ToolCall, ToolCallParser
 
 
 def make_parser():

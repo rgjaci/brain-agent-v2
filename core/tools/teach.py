@@ -15,7 +15,6 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +53,8 @@ class TeachResult:
     success: bool
     stored_type: str  # 'memory', 'procedure', 'preference', 'correction'
     content: str = ""
-    memory_id: Optional[int] = None
-    procedure_id: Optional[int] = None
+    memory_id: int | None = None
+    procedure_id: int | None = None
     error: str = ""
 
 
@@ -94,9 +93,8 @@ class TeachTool:
             return "procedure"
 
         for pattern in PROCEDURE_INDICATORS:
-            if re.search(pattern, lower):
-                if len(steps) >= 1:
-                    return "procedure"
+            if re.search(pattern, lower) and len(steps) >= 1:
+                return "procedure"
 
         # Preference
         for pattern in PREFERENCE_INDICATORS:

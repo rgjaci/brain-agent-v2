@@ -1,14 +1,15 @@
 """Integration-style tests for adaptive retrieval pipeline (MemoryReader end-to-end)."""
 from __future__ import annotations
-import asyncio
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 def make_reader_with_data():
-    from core.memory.reader import MemoryReader
     from core.memory.database import MemoryDatabase
     from core.memory.kg import KnowledgeGraph
+    from core.memory.reader import MemoryReader
 
     db = MemoryDatabase(":memory:")
     embedder = MagicMock()
@@ -35,7 +36,7 @@ def make_reader_with_data():
 
 @pytest.mark.asyncio
 async def test_retrieve_returns_result():
-    reader, db, kg, ids = make_reader_with_data()
+    reader, _db, _kg, _ids = make_reader_with_data()
     reader.db.vector_search = MagicMock(return_value=[])
     reader.db.fts_search = MagicMock(return_value=[])
     result = await reader.retrieve("SSH setup")
@@ -44,7 +45,7 @@ async def test_retrieve_returns_result():
 
 @pytest.mark.asyncio
 async def test_retrieve_conservative_strategy():
-    reader, db, kg, ids = make_reader_with_data()
+    reader, _db, _kg, _ids = make_reader_with_data()
     reader.db.vector_search = MagicMock(return_value=[])
     reader.db.fts_search = MagicMock(return_value=[])
     # Very short query -> conservative
@@ -54,7 +55,7 @@ async def test_retrieve_conservative_strategy():
 
 @pytest.mark.asyncio
 async def test_retrieve_aggressive_strategy():
-    reader, db, kg, ids = make_reader_with_data()
+    reader, _db, _kg, _ids = make_reader_with_data()
     reader.db.vector_search = MagicMock(return_value=[])
     reader.db.fts_search = MagicMock(return_value=[])
     result = await reader.retrieve("do you remember what I said about SSH keys?")
@@ -63,7 +64,7 @@ async def test_retrieve_aggressive_strategy():
 
 @pytest.mark.asyncio
 async def test_retrieve_returns_memories_field():
-    reader, db, kg, ids = make_reader_with_data()
+    reader, db, _kg, _ids = make_reader_with_data()
     all_rows = db.execute(
         "SELECT id, content, category, importance, access_count, created_at FROM memories"
     )
@@ -104,7 +105,7 @@ def test_strategy_technical_normal():
 # ── RRF pipeline ─────────────────────────────────────────────────────────────
 
 def test_rrf_pipeline_deduplicates():
-    reader, db, _, ids = make_reader_with_data()
+    reader, _db, _, ids = make_reader_with_data()
     # Use real DB id
     shared_id = ids[0]
     dense  = [{"id": shared_id}, {"id": ids[1]}]
@@ -115,7 +116,7 @@ def test_rrf_pipeline_deduplicates():
 
 
 def test_rrf_fusion_score_ordering():
-    reader, db, _, ids = make_reader_with_data()
+    reader, _db, _, ids = make_reader_with_data()
     # id=ids[0] appears in both lists → higher RRF score
     dense  = [{"id": ids[0]}, {"id": ids[1]}]
     sparse = [{"id": ids[0]}, {"id": ids[2]}]
@@ -126,11 +127,11 @@ def test_rrf_fusion_score_ordering():
 
 
 def test_rrf_fuse_empty():
-    reader, db, _, ids = make_reader_with_data()
+    reader, _db, _, _ids = make_reader_with_data()
     assert reader.rrf_fuse([], []) == []
 
 
 def test_rrf_fuse_skips_missing_db_id():
-    reader, db, _, ids = make_reader_with_data()
+    reader, _db, _, _ids = make_reader_with_data()
     result = reader.rrf_fuse([{"id": 99999}], [])
     assert result == []

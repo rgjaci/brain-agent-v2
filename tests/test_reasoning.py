@@ -1,9 +1,9 @@
 """Tests for core/memory/reasoning.py — System 2 Reasoning Engine."""
 from __future__ import annotations
 
-import asyncio
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock
 
 
 @pytest.fixture
@@ -75,7 +75,7 @@ async def test_reasoning_cycles_rotate_strategies(reasoning_engine):
 @pytest.mark.asyncio
 async def test_gap_analysis_generates_questions(reasoning_engine, db, mock_llm):
     """Gap analysis should generate questions about a topic."""
-    eid = db.insert_entity("Python", entity_type="language", importance=0.9)
+    db.insert_entity("Python", entity_type="language", importance=0.9)
     for i in range(5):
         db.insert_memory(f"User uses Python for task {i}", category="fact")
 

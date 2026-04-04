@@ -1,9 +1,8 @@
 """Tests for ProcedureStore — storage, retrieval, record success/failure."""
 from __future__ import annotations
-import pytest
-import time
+
 from core.memory.database import MemoryDatabase
-from core.memory.procedures import ProcedureStore, Procedure
+from core.memory.procedures import Procedure, ProcedureStore
 
 
 def make_store():

@@ -44,3 +44,30 @@ packages = ["brain_agent"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 timeout = 30
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # Pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # Ruff-specific rules
+]
+ignore = [
+    "E501",  # Line length handled by formatter
+    "B008",  # Do not perform function call in argument defaults (common in dataclasses)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "tui", "server", "benchmarks"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

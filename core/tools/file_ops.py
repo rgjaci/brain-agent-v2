@@ -13,10 +13,8 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +53,7 @@ class FileResult:
 class FileOpsTool:
     """Read, write, and edit files with permission enforcement."""
 
-    def __init__(self, permissions: Optional[dict] = None):
+    def __init__(self, permissions: dict | None = None):
         perms = permissions or {}
         self.read_allowed: list[str] = perms.get("read_allowed", [])
         self.read_blocked: list[str] = list(perms.get("read_blocked", [])) + DEFAULT_READ_BLOCKED
@@ -69,8 +67,8 @@ class FileOpsTool:
     def read_file(
         self,
         path: str,
-        start_line: Optional[int] = None,
-        end_line: Optional[int] = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
     ) -> FileResult:
         """Read a file, optionally limiting to a line range (1-indexed)."""
         resolved = self._resolve(path)

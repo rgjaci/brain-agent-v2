@@ -9,11 +9,9 @@ surfaces for various triggering queries.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 import time
 from typing import NamedTuple
-
 
 PROCEDURES = [
     {
@@ -103,7 +101,7 @@ class ProcResult(NamedTuple):
 
 def run_benchmark(verbose: bool = False) -> dict:
     from core.memory.database import MemoryDatabase
-    from core.memory.procedures import ProcedureStore, Procedure
+    from core.memory.procedures import Procedure, ProcedureStore
 
     db = MemoryDatabase(":memory:")
     store = ProcedureStore(db)
@@ -173,7 +171,7 @@ def main():
     print("\n=== Procedure Retrieval Benchmark ===\n")
     metrics = run_benchmark(verbose=args.verbose)
 
-    print(f"\nResults:")
+    print("\nResults:")
     print(f"  Recall:  {metrics['recall']:.1%}")
     print(f"  MRR:     {metrics['mrr']:.4f}")
     print(f"  Found:   {metrics['found']} / {metrics['total_queries']}")

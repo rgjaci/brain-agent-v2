@@ -8,10 +8,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..memory.documents import DocumentIngester
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class IngestTool:
                         ".yaml", ".yml", ".toml", ".html", ".css", ".csv",
                     ):
                         try:
-                            doc_id = await self.ingester.ingest(
+                            await self.ingester.ingest(
                                 str(file_path), session_id="tool"
                             )
                             total_docs += 1
@@ -89,7 +89,7 @@ class IngestTool:
                 )
             else:
                 # Single file
-                doc_id = await self.ingester.ingest(str(resolved), session_id="tool")
+                await self.ingester.ingest(str(resolved), session_id="tool")
                 size = resolved.stat().st_size
                 chunks = max(1, size // 2048)
                 return IngestResult(

@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
 # ── async support ─────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
